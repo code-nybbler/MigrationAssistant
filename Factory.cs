@@ -20,9 +20,9 @@ namespace MigrationAssistant
         {
             this.OrgService = OrgService;
         }
-        public List<Field> ImportFromCSV(string FilePath)
+        public Dictionary<string, List<Field>> ImportFromCSV(string FilePath)
         {
-            List<Field> Mappings = new List<Field>();
+            Dictionary<string, List<Field>> Mappings = new Dictionary<string, List<Field>>();
 
             StreamReader Reader;
             if (File.Exists(FilePath))
@@ -53,7 +53,14 @@ namespace MigrationAssistant
 
                                 SourceField.MAPPED_FIELD = DestinationField;
 
-                                if (SourceField != null) Mappings.Add(SourceField);
+                                if (SourceField != null)
+                                {
+                                    if (!Mappings.Keys.Contains(DestinationField.TABLE_NAME))
+                                    {
+                                        Mappings.Add(DestinationField.TABLE_NAME, new List<Field> { SourceField });
+                                    }
+                                    else Mappings[DestinationField.TABLE_NAME].Add(SourceField);
+                                }
                             }
                         }
                     }
@@ -65,27 +72,53 @@ namespace MigrationAssistant
             }
             return Mappings;
         }
-        public void ExportSQLScripts(string SaveFilePath)
+        public void ExportSQLScripts(Dictionary<string, List<Field>> Mappings, string SaveFilePath)
         {
-            string file, row;
-            foreach (Table table in TableList.Where(t => t.MAPPED_ENTITY_NAME != string.Empty))
+            List<string> columns;
+            string file, line, mainTable = string.Empty;
+
+            int maxOccur = -1, occur;
+            foreach (KeyValuePair<string, List<Field>> kv in Mappings)
             {
-                file = string.Format("{0}/" + table.NAME + ".sql", SaveFilePath);
+                // kv.Key = mapped entity name
+                // kv.Value = mapped source fields
+                file = string.Format("{0}/" + kv.Key + ".sql", SaveFilePath);
+                columns = new List<string>();
+
+                // get occurence count for each source table in mapped fields to select main table to query from
+                foreach (string tableName in kv.Value.Select(x => x.TABLE_NAME).Distinct())
+                {
+                    occur = kv.Value.Distinct().Count();
+                    if (occur > maxOccur)
+                    {
+                        maxOccur = occur;
+                        mainTable = tableName;
+                    }
+                }
 
                 using (var stream = File.CreateText(file))
                 {
-                    row = "SELECT";
-                    stream.WriteLine(row);
+                    line = "SELECT";
+                    stream.WriteLine(line);
 
-                    foreach (Field field in table.FIELDS.Where(f => f.MAPPED_FIELD != null))
+                    foreach (Field field in kv.Value)
                     {
-                        row = string.Format("{0}.{1} as {2}", field.TABLE_NAME, field.COLUMN_NAME, field.MAPPED_FIELD.COLUMN_NAME);
-                        stream.WriteLine(row);
+                        line = string.Format("{0}.{1} AS {2}", field.TABLE_NAME, field.COLUMN_NAME, field.MAPPED_FIELD.COLUMN_NAME);
+                        columns.Add(line);
                     }
 
-                    row = string.Format("FROM {0}.{1}", Database, table.NAME);
-                    stream.WriteLine(row);
-                    
+                    stream.WriteLine(columns.Aggregate((a, b) => a + ",\n" + b));
+
+                    line = string.Format("FROM {0}.{1}", Database, mainTable);
+                    stream.WriteLine(line);
+
+                    // create joins to related tables
+                    foreach (string tableName in kv.Value.Select(x => x.TABLE_NAME).Where(t => t != mainTable).Distinct())
+                    {
+                        line = string.Format("LEFT JOIN {0}.{1} ON {2}.{3} = {4}.{5}", Database, tableName, tableName, "PKEY", mainTable, "FKEY");
+                        stream.WriteLine(line);
+                    }
+
                     stream.Close();
                 }
             }
@@ -585,6 +618,16 @@ namespace MigrationAssistant
             {
                 throw new Exception(ex.Message);
             }
+        }
+        private Key CheckIfForeignKey(Table table, Field field)
+        {
+            Key key = table.KEYS.Find(x => x.COLUMN_NAME == field.COLUMN_NAME && x.KEY_TYPE == 2);
+
+            if (key != null)
+            {
+                if (!TableList.Exists(x => x.NAME.ToLower() == key.REFERENCED_TABLE.ToLower() && x.SCHEMA.ToLower() == key.REFERENCED_SCHEMA.ToLower())) key = null;
+            }
+            return key;
         }
     }
 }

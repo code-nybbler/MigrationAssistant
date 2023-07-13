@@ -1,4 +1,5 @@
 ﻿using ClosedXML.Excel;
+using DocumentFormat.OpenXml.InkML;
 using McTools.Xrm.Connection;
 using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
@@ -8,6 +9,7 @@ using Microsoft.Xrm.Sdk.Query;
 using System;
 using System.Collections.Generic;
 using System.Data.SqlClient;
+using System.Drawing;
 using System.Linq;
 using System.ServiceModel;
 using System.Text.RegularExpressions;
@@ -21,7 +23,7 @@ namespace MigrationAssistant
     public partial class MigrationAssistantControl : PluginControlBase
     {
         private List<Entity> solutions;
-        private List<Field> mappings;
+        private Dictionary<string, List<Field>> mappings;
         Dictionary<string, IEnumerable<EntityMetadata>> entities;
         private ListBox sourceTab, destinationTab;
         private Field sourceField, destinationField;
@@ -207,43 +209,54 @@ namespace MigrationAssistant
         }
         private void btn_ImportCSV_Click(object sender, EventArgs e)
         {
-            using (var selectedFile = new OpenFileDialog
-                                        {
-                                            InitialDirectory = @"c:\",
-                                            Title = "Browse CSV Files",
-                                            CheckFileExists = true,
-                                            CheckPathExists = true,
-                                            Filter = "csv files (*.csv)|*.csv",
-                                            FilterIndex = 2,
-                                            RestoreDirectory = true
-                                        })
+            if (entities != null && EntityFactory.TableList != null)
             {
-                if (selectedFile.ShowDialog() == DialogResult.OK)
+                using (var selectedFile = new OpenFileDialog
                 {
-                    mappings = EntityFactory.ImportFromCSV(selectedFile.FileName);
-
-                    int tabIndex = -1;
-                    foreach (Field field in mappings)
+                    InitialDirectory = @"c:\",
+                    Title = "Browse CSV Files",
+                    CheckFileExists = true,
+                    CheckPathExists = true,
+                    Filter = "csv files (*.csv)|*.csv",
+                    FilterIndex = 2,
+                    RestoreDirectory = true
+                })
+                {
+                    if (selectedFile.ShowDialog() == DialogResult.OK)
                     {
-                        foreach (TabPage tp in sourceTabControl.TabPages)
+                        mappings = EntityFactory.ImportFromCSV(selectedFile.FileName);
+
+                        int tabIndex = -1;
+                        foreach (KeyValuePair<string, List<Field>> kv in mappings)
                         {
-                            if (tp.Name == field.TABLE_NAME)
+                            foreach (Field field in kv.Value)
                             {
-                                tabIndex = sourceTabControl.TabPages.IndexOf(tp);
-                                break;
+                                foreach (TabPage tp in sourceTabControl.TabPages)
+                                {
+                                    if (tp.Name == field.TABLE_NAME)
+                                    {
+                                        tabIndex = sourceTabControl.TabPages.IndexOf(tp);
+                                        break;
+                                    }
+                                }
+
+                                if (tabIndex != -1)
+                                {
+                                    sourceTab = (ListBox)sourceTabControl.TabPages[tabIndex].Controls[0];
+                                    sourceField = field;
+                                    sourceItemIdx = sourceTab.Items.IndexOf(sourceField.COLUMN_NAME + " (" + sourceField.DATA_TYPE + ")");
+                                    destinationField = field.MAPPED_FIELD;
+                                    ExecuteMethod(MapColumn);
+                                }
                             }
                         }
-
-                        if (tabIndex != -1)
-                        {
-                            sourceTab = (ListBox)sourceTabControl.TabPages[tabIndex].Controls[0];
-                            sourceField = field;
-                            sourceItemIdx = sourceTab.Items.IndexOf(sourceField.COLUMN_NAME + " (" + sourceField.DATA_TYPE + ")");
-                            destinationField = field.MAPPED_FIELD;
-                            ExecuteMethod(MapColumn);
-                        }
+                        MessageBox.Show("Mappings imported successfully.", "CSV Import");
                     }
                 }
+            }
+            else
+            {
+                MessageBox.Show("Please load the source and destination tables before importing.", "CSV Import");
             }
         }
         private void btn_LoadSolutionEntities_Click(object sender, EventArgs e)
@@ -255,14 +268,19 @@ namespace MigrationAssistant
         {
             if (sourceField != null && destinationField != null)
             {
-                if (mappings.Find(r => r.COLUMN_NAME == sourceField.COLUMN_NAME && r.TABLE_NAME == sourceField.TABLE_NAME) == null)
+                if (mappings[destinationField.TABLE_NAME].Find(r => r.COLUMN_NAME == sourceField.COLUMN_NAME && r.TABLE_NAME == sourceField.TABLE_NAME) == null)
                 {
                     sourceItemIdx = sourceTab.SelectedIndex;                    
                 }
                 else sourceItemIdx = sourceTab.SelectedIndex + 1;
 
                 sourceField.MAPPED_FIELD = destinationField;
-                mappings.Add(sourceField);
+
+                if (!mappings.Keys.Contains(destinationField.TABLE_NAME))
+                {
+                    mappings.Add(destinationField.TABLE_NAME, new List<Field> { sourceField });
+                }
+                else mappings[destinationField.TABLE_NAME].Add(sourceField);
 
                 ExecuteMethod(MapColumn);
                 btn_Map.Enabled = false;
@@ -284,16 +302,7 @@ namespace MigrationAssistant
         {
             if (destinationTab != null)
             {
-                EntityMetadata entity = GetEntityMetaData(destinationTab.Name);
-
-                if (entity != null)
-                {
-                    destinationTab.Items.Clear();
-                    foreach (AttributeMetadata field in entity.Attributes)
-                    {
-                        destinationTab.Items.Add(field.LogicalName + " (" + field.AttributeTypeName.Value.Replace("Type", string.Empty) + ")");
-                    }
-                }
+                RefreshEntity(destinationTab.Name);
             }
         }
         private void btn_SaveCSV_Click(object sender, EventArgs e)
@@ -333,21 +342,13 @@ namespace MigrationAssistant
                     destinationFieldType = selection.Split('>')[1].Split('.')[1].Split('(')[1].Trim(')');
                     destinationItem = destinationFieldName + " (" + destinationFieldType + ")";
 
-                    mappings.Remove(mappings.Find(r => r.COLUMN_NAME == sourceField.COLUMN_NAME && r.MAPPED_FIELD.COLUMN_NAME == destinationFieldName));
+                    mappings[sourceField.MAPPED_FIELD.TABLE_NAME].Remove(mappings[sourceField.MAPPED_FIELD.TABLE_NAME].Find(r => r.COLUMN_NAME == sourceField.COLUMN_NAME && r.MAPPED_FIELD.COLUMN_NAME == destinationFieldName));
                     btn_Unmap.Enabled = false;
                 }
             }
             else
             {
                 MessageBox.Show("Please select a source field to unmap.", "Missing Selection");
-            }
-        }
-        private void destinationTabControl_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            if (((TabControl)sender).SelectedIndex > -1)
-            {
-                destinationTab = (ListBox)((TabControl)sender).TabPages[((TabControl)sender).SelectedIndex].Controls[0];
-                destinationField = null;
             }
         }
         private void DestinationField_Click(object sender, EventArgs e)
@@ -363,12 +364,19 @@ namespace MigrationAssistant
                 if (sourceTab != null && sourceTab.SelectedItem != null) btn_Map.Enabled = true;
             }
         }
+        private void DestinationTab_Click(object sender, EventArgs e)
+        {
+            if (((TabControl)sender).SelectedIndex > -1)
+            {
+                destinationTab = (ListBox)((TabControl)sender).TabPages[((TabControl)sender).SelectedIndex].Controls[0];
+                destinationField = null;
+            }
+        }
         private void lst_Solutions_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (lst_Solutions.CheckedItems.Count > 0)
             {
                 btn_LoadSolutionEntities.Enabled = true;
-                box_Solution.Enabled = true;
 
                 box_Solution.Items.Clear();
                 foreach (int idx in lst_Solutions.CheckedIndices)
@@ -602,14 +610,23 @@ namespace MigrationAssistant
             string dataType = box_DataType.SelectedItem.ToString();
             int length = (int)num_FieldLength.Value;
             int required = box_Requirement.SelectedIndex == 0 ? 0 : box_Requirement.SelectedIndex + 1;
-
-            EntityMetadata tableEM = entities[solution].ToList().Find(e => e.LogicalName == table);
+            EntityMetadata tableEM = null;
             EntityMetadata targetEM = null;
             string relationshipName = string.Empty;
 
+            string targetSolution = entities.Keys.ToList().Find(s => entities[s].ToList().Find(e => e.LogicalName == table) != null);
+            if (targetSolution != null)
+            {
+                tableEM = entities[targetSolution].ToList().Find(e => e.LogicalName == table);
+            }
+            else
+            {
+                MessageBox.Show("Unable to find encompassing solution from solutions list.");
+            }
+
             if (box_Target.SelectedItem != null)
             {
-                string targetSolution = entities.Keys.ToList().Find(s => entities[s].ToList().Find(e => e.LogicalName == box_Target.SelectedItem.ToString()) != null);
+                targetSolution = entities.Keys.ToList().Find(s => entities[s].ToList().Find(e => e.LogicalName == box_Target.SelectedItem.ToString()) != null);
                 if (targetSolution != null)
                 {
                     targetEM = entities[targetSolution].ToList().Find(e => e.LogicalName == box_Target.SelectedItem.ToString());
@@ -714,49 +731,19 @@ namespace MigrationAssistant
         }
         private void DisableInputs()
         {
-            lst_Solutions.Enabled = false;
-            box_Solution.Enabled = false;
-            box_Format.Enabled = false;
-            box_Language.Enabled = false;
-            box_Table.Enabled = false;
-            box_DataType.Enabled = false;
-            txt_FieldDisplayName.Enabled = false;
-            txt_FieldName.Enabled = false;
-            box_Requirement.Enabled = false;
-            txt_TableDisplayName.Enabled = false;
-            txt_TablePluralName.Enabled = false;
-            txt_TableName.Enabled = false;
-            txt_tableDescription.Enabled = false;
-            txt_PrimaryDisplayName.Enabled = false;
-            txt_PrimaryName.Enabled = false;
-            box_PrimaryRequirement.Enabled = false;
-            box_Target.Enabled = false;
-            txt_RelationshipName.Enabled = false;
-            num_MinValue.Enabled = false;
-            num_MaxValue.Enabled = false;
+            grp_DestinationSettings.Enabled = false;
+            grp_FieldCreation.Enabled = false;
+            grp_EntityCreation.Enabled = false;
+
+            btn_Refresh.Enabled = false;
         }
         private void EnableInputs()
         {
-            lst_Solutions.Enabled = true;
-            box_Solution.Enabled = true;
-            box_Format.Enabled = true;
-            box_Language.Enabled = true;
-            box_Table.Enabled = true;
-            box_DataType.Enabled = true;
-            txt_FieldDisplayName.Enabled = true;
-            txt_FieldName.Enabled = true;
-            box_Requirement.Enabled = true;
-            txt_TableDisplayName.Enabled = true;
-            txt_TablePluralName.Enabled = true;
-            txt_TableName.Enabled = true;
-            txt_tableDescription.Enabled = true;
-            txt_PrimaryDisplayName.Enabled = true;
-            txt_PrimaryName.Enabled = true;
-            box_PrimaryRequirement.Enabled = true;
-            box_Target.Enabled = true;
-            txt_RelationshipName.Enabled = true;
-            num_MinValue.Enabled = true;
-            num_MaxValue.Enabled = true;
+            grp_DestinationSettings.Enabled = true;
+            grp_FieldCreation.Enabled = true;
+            grp_EntityCreation.Enabled = true;
+
+            btn_Refresh.Enabled = true;
         }
         private void ExportExcel(bool includeUnmapped)
         {
@@ -794,7 +781,7 @@ namespace MigrationAssistant
                 Work = (w, e) =>
                 {
                     // This code is executed in another thread
-                    EntityFactory.ExportSQLScripts(saveFilePath);
+                    EntityFactory.ExportSQLScripts(mappings, saveFilePath);
 
                     w.ReportProgress(-1, "Scripts saved successfully.");
                     e.Result = 1;
@@ -905,7 +892,6 @@ namespace MigrationAssistant
                     solutions.Add(solution);
                     lst_Solutions.Items.Add(solution["uniquename"].ToString());
                 }
-                lst_Solutions.Enabled = true;
             }
             catch (FaultException<OrganizationServiceFault> ex)
             {
@@ -957,8 +943,6 @@ namespace MigrationAssistant
                 solutionSelections.Add(sel);
             }
 
-            lst_Solutions.Enabled = false;
-            btn_LoadSolutionEntities.Enabled = false;
             ExecuteMethod(DisableInputs);
 
             WorkAsync(new WorkAsyncInfo
@@ -982,7 +966,8 @@ namespace MigrationAssistant
                 PostWorkCallBack = e =>
                 {
                     // This code is executed in the main thread
-                    TabPage tabPage;
+                    TabControl tabControl;
+                    TabPage solutionTabPage, tableTabPage;
                     ListBox box;
                     object fieldObj;
 
@@ -993,19 +978,45 @@ namespace MigrationAssistant
                     int tabIdx = 0;
                     foreach (KeyValuePair<string, IEnumerable<EntityMetadata>> kv in entities)
                     {
+                        solutionTabPage = new TabPage
+                        {
+                            Name = kv.Key,
+                            Text = kv.Key,
+                            BorderStyle = BorderStyle.None,
+                            Height = 434,
+                            Width = 9999,
+                            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                        };
+
+                        destinationTabControl.TabPages.Add(solutionTabPage);
+
+                        tabControl = new TabControl
+                        {
+                            Name = kv.Key,
+                            Appearance = TabAppearance.FlatButtons,
+                            Height = 434,
+                            Width = 9999,
+                            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                        };
+
+                        tabControl.SelectedIndexChanged += new EventHandler(DestinationTab_Click);
+
+                        solutionTabPage.Controls.Add(tabControl);
+
                         foreach (EntityMetadata entity in kv.Value)
                         {
-                            tabPage = new TabPage
+                            tableTabPage = new TabPage
                             {
                                 Name = entity.LogicalName,
-                                Text = entity.LogicalName
+                                Text = entity.LogicalName,
+                                BorderStyle = BorderStyle.None
                             };
 
-                            destinationTabControl.TabPages.Add(tabPage);
+                            tabControl.TabPages.Add(tableTabPage);
 
                             box = new ListBox
                             {
-                                Name = tabPage.Name,
+                                Name = tableTabPage.Name,
                                 SelectionMode = SelectionMode.One,
                                 Height = 434,
                                 Width = 9999,
@@ -1021,12 +1032,9 @@ namespace MigrationAssistant
                                 box.Items.Add(fieldObj);
                             }
 
-                            tabPage.Controls.Add(box);
+                            tableTabPage.Controls.Add(box);
                             box_Table.Items.Add(entity.LogicalName);
-                            box_Target.Items.Add(entity.LogicalName);
-
-                            box_Table.Enabled = true;
-                            btn_LoadSolutionEntities.Enabled = true;
+                            box_Target.Items.Add(entity.LogicalName);                            
 
                             if (tabIdx == 0)
                             {
@@ -1035,6 +1043,7 @@ namespace MigrationAssistant
                             }
                         }
                     }
+
                     ExecuteMethod(EnableInputs);
                 },
                 AsyncArgument = null,
@@ -1051,13 +1060,11 @@ namespace MigrationAssistant
 
             sourceTab.Items.Remove(item);
             sourceTab.Items.Insert(sourceItemIdx, item + " -> " + destinationField.TABLE_NAME + "." + destinationField.COLUMN_NAME + " (" + destinationField.DATA_TYPE + ")");
-
-            sourceTab.BackColor = System.Drawing.Color.Green;
         }
         private void MigrationAssistantControl_Load(object sender, EventArgs e)
         {
             EntityFactory = new Factory(Service);
-            mappings = new List<Field>();
+            mappings = new Dictionary<string, List<Field>>();
             schemaFormat = "PascalCase";
             languages = new Dictionary<int, string>{
                 {1078,"Afrikaans – South Africa"},
@@ -1359,7 +1366,8 @@ namespace MigrationAssistant
                         tabPage = new TabPage
                         {
                             Name = table.NAME,
-                            Text = table.NAME
+                            Text = table.NAME,
+                            BorderStyle = BorderStyle.None
                         };
 
                         sourceTabControl.TabPages.Add(tabPage);
@@ -1390,6 +1398,43 @@ namespace MigrationAssistant
                         }
                     }
                     ExecuteMethod(EnableInputs);
+                },
+                AsyncArgument = null,
+                // Progress information panel size
+                MessageWidth = 340,
+                MessageHeight = 150
+            });
+        }
+        private void RefreshEntity(string entityName)
+        {
+            EntityMetadata entity = null;
+
+            WorkAsync(new WorkAsyncInfo
+            {
+                Message = "Refreshing entity...",
+                Work = (w, e) =>
+                {
+                    // This code is executed in another thread
+                    entity = GetEntityMetaData(entityName);
+
+                    w.ReportProgress(-1, "Entity refreshed successfully");
+                    e.Result = 1;
+                },
+                ProgressChanged = e =>
+                {
+                    SetWorkingMessage(e.UserState.ToString());
+                },
+                PostWorkCallBack = e =>
+                {
+                    // This code is executed in the main thread
+                    if (entity != null)
+                    {
+                        destinationTab.Items.Clear();
+                        foreach (AttributeMetadata field in entity.Attributes)
+                        {
+                            destinationTab.Items.Add(field.LogicalName + " (" + field.AttributeTypeName.Value.Replace("Type", string.Empty) + ")");
+                        }
+                    }
                 },
                 AsyncArgument = null,
                 // Progress information panel size
@@ -1462,12 +1507,6 @@ namespace MigrationAssistant
         }
         private void ToggleFieldInputs()
         {
-            num_FieldLength.Enabled = false;
-            num_MinValue.Enabled = false;
-            num_MaxValue.Enabled = false;
-            box_Target.Enabled = false;
-            txt_RelationshipName.Enabled = false;
-
             lbl_FieldLength.Visible = false;
             num_FieldLength.Visible = false;
 
@@ -1484,10 +1523,6 @@ namespace MigrationAssistant
             switch (box_DataType.Text)
             {
                 case "Single Line of Text":
-                    num_FieldLength.Enabled = true;
-                    num_MinValue.Enabled = false;
-                    num_MaxValue.Enabled = false;
-
                     lbl_FieldLength.Visible = true;
                     num_FieldLength.Visible = true;
 
@@ -1496,8 +1531,6 @@ namespace MigrationAssistant
                     num_FieldLength.Value = 100;
                     break;
                 case "Multiple Lines of Text":
-                    num_FieldLength.Enabled = true;
-
                     lbl_FieldLength.Visible = true;
                     num_FieldLength.Visible = true;
 
@@ -1516,9 +1549,6 @@ namespace MigrationAssistant
                     num_FieldLength.Value = 1;
                     break;
                 case "Whole Number":
-                    num_MinValue.Enabled = true;
-                    num_MaxValue.Enabled = true;
-
                     lbl_FieldLength.Visible = true;
                     num_FieldLength.Visible = true;
 
@@ -1540,10 +1570,6 @@ namespace MigrationAssistant
                     num_MaxValue.Value = 2147483647;
                     break;
                 case "Decimal Number":
-                    num_FieldLength.Enabled = true;
-                    num_MinValue.Enabled = true;
-                    num_MaxValue.Enabled = true;
-
                     lbl_FieldLength.Visible = true;
                     num_FieldLength.Visible = true;
 
@@ -1565,10 +1591,6 @@ namespace MigrationAssistant
                     num_MaxValue.Value = 100000000000;
                     break;
                 case "Floating Point Number":
-                    num_FieldLength.Enabled = true;
-                    num_MinValue.Enabled = true;
-                    num_MaxValue.Enabled = true;
-
                     lbl_FieldLength.Visible = true;
                     num_FieldLength.Visible = true;
 
@@ -1590,10 +1612,6 @@ namespace MigrationAssistant
                     num_MaxValue.Value = 100000000000;
                     break;
                 case "Currency":
-                    num_FieldLength.Enabled = true;
-                    num_MinValue.Enabled = true;
-                    num_MaxValue.Enabled = true;
-
                     lbl_FieldLength.Visible = true;
                     num_FieldLength.Visible = true;
 
@@ -1616,8 +1634,6 @@ namespace MigrationAssistant
                     break;
                 case "Image":
                 case "File":
-                    num_FieldLength.Enabled = true;
-
                     lbl_FieldLength.Visible = true;
                     num_FieldLength.Visible = true;
 
@@ -1626,9 +1642,6 @@ namespace MigrationAssistant
                     num_FieldLength.Value = 32768;
                     break;
                 case "Lookup":
-                    box_Target.Enabled = true;
-                    txt_RelationshipName.Enabled = true;
-
                     lbl_Target.Visible = true;
                     box_Target.Visible = true;
                     lbl_RelationshipName.Visible = true;
