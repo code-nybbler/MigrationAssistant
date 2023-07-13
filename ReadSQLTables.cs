@@ -1,6 +1,4 @@
 ﻿using Microsoft.Xrm.Sdk;
-using Microsoft.Xrm.Sdk.Messages;
-using Microsoft.Xrm.Sdk.Metadata;
 using System;
 using System.Collections.Generic;
 using System.Data.SqlClient;
@@ -9,13 +7,11 @@ namespace MigrationAssistant
 {
     internal class ReadSQLTables
     {
-        public string Database { get; set; }
-        public SqlConnection Connection { get; set; }
+        public string Database;
+        public SqlConnection Connection;
         protected IOrganizationService OrgService;
-        protected readonly int LanguageCode = 1033;
-        public bool InspectData { get; set; }
-        public bool IgnoreEmpty { get; set; }
-        protected List<string> ExistingTables;
+        protected int LanguageCode = 1033;
+        public bool IgnoreEmpty;
 
         public List<Table> ReadAllSQLTables(int Mode, string SelectedTableSchema)
         {
@@ -46,32 +42,32 @@ namespace MigrationAssistant
             int RecCount;
             Table table;
 
-            if (Mode == 1 || Mode == 2)
+            if (Mode == 0)
             {
-                foreach (string[] tbl in Tables)
+                string[] tableArr = Tables.Find(t => t[0].ToLower()+"."+t[1].ToLower() == SelectedTableSchema);
+                RecCount = IgnoreEmpty ? GetRecordCount(tableArr) : 0;
+
+                if (RecCount > 0 || !IgnoreEmpty)
                 {
-                    if ((Mode == 1 && tbl[0].ToLower() == SelectedTableSchema) || (Mode == 2 && tbl[1].ToLower() == SelectedTableSchema))
-                    {
-                        RecCount = GetRecordCount(tbl);
-                        if (RecCount > 0 || !InspectData || !IgnoreEmpty)
-                        {
-                            table = RetrieveTableColumns(tbl);
-                            table.RECORD_COUNT = RecCount;
-                            TableList.Add(table);
-                        }
-                    }
+                    table = RetrieveTableColumns(tableArr);
+                    table.RECORD_COUNT = RecCount;
+                    TableList.Add(table);
                 }
             }
             else
-            {                
-                foreach (string[] tbl in Tables)
+            {
+                foreach (string[] tableArr in Tables)
                 {
-                    RecCount = GetRecordCount(tbl);
-                    if (RecCount > 0 || !InspectData || !IgnoreEmpty)
+                    if ((Mode == 1 && tableArr[0].ToLower() == SelectedTableSchema) || Mode == 2)
                     {
-                        table = RetrieveTableColumns(tbl);
-                        table.RECORD_COUNT = RecCount;
-                        TableList.Add(table);
+                        RecCount = IgnoreEmpty ? GetRecordCount(tableArr) : 0;
+
+                        if (RecCount > 0 || !IgnoreEmpty)
+                        {
+                            table = RetrieveTableColumns(tableArr);
+                            table.RECORD_COUNT = RecCount;
+                            TableList.Add(table);
+                        }
                     }
                 }
             }
@@ -121,8 +117,9 @@ namespace MigrationAssistant
                 // check count of distinct values for each column
                 foreach (Field field in fields)
                 {
-                    field.DISTINCT_VALUE_COUNT = GetDistinctValueCount(table, field);
-                    if (field.DISTINCT_VALUE_COUNT > 0 || !InspectData || !IgnoreEmpty) // remove empty columns
+                    field.DISTINCT_VALUE_COUNT = IgnoreEmpty ? GetDistinctValueCount(table, field) : 0;
+
+                    if (field.DISTINCT_VALUE_COUNT > 0 || !IgnoreEmpty) // ignore empty columns
                     {
                         fieldsFiltered.Add(field);
                     }
@@ -259,7 +256,7 @@ namespace MigrationAssistant
 
             return DistinctValues;
         }
-        protected Dictionary<int, string> GetDistinctValues(string col, Table tbl, Key key, string descCol)
+        public Dictionary<int, string> GetDistinctValues(string col, Table tbl, Key key, string descCol)
         {
             Connection.Open();
 
@@ -304,72 +301,6 @@ namespace MigrationAssistant
 
             Connection.Close();
             return Values;
-        }
-        protected string FindCodeDescriptionColumn(List<Field> Fields)
-        {
-            char UsrInput;
-            string DescColumn = "";
-
-            Console.WriteLine("Searching for possible description fields...");
-            foreach (Field field in Fields)
-            {
-                do
-                {
-                    Console.Write(Environment.NewLine + $"Is [{field.COLUMN_NAME}] the correct description field? (q to quit) ");
-                    UsrInput = Console.ReadKey().KeyChar;
-                } while (UsrInput != 'y' && UsrInput != 'n' && UsrInput != 'q');
-
-                if (UsrInput == 'y')
-                {
-                    DescColumn = field.COLUMN_NAME;
-                    break;
-                }
-                else if (UsrInput == 'q')
-                {
-                    break;
-                }
-            }
-
-            return DescColumn;
-        }
-        protected EntityMetadata RetrieveEntityMetaData(string EntityLogicalName)
-        {
-            try
-            {
-                RetrieveEntityRequest req = new RetrieveEntityRequest()
-                {
-                    EntityFilters = EntityFilters.Attributes,
-                    LogicalName = EntityLogicalName
-                };
-                return (OrgService.Execute(req) as RetrieveEntityResponse).EntityMetadata;
-            }
-            catch (Exception ex)
-            {
-                return null;
-            }
-        }
-        /*protected List<string> GetExistingTableNames()
-        {
-            try
-            {
-                RetrieveAllEntitiesRequest metaDataRequest = new RetrieveAllEntitiesRequest
-                {
-                    EntityFilters = EntityFilters.Entity
-                };
-
-                RetrieveAllEntitiesResponse metaDataResponse = (RetrieveAllEntitiesResponse)OrgService.Execute(metaDataRequest);
-
-                List<string> Tables = new List<string>();
-                foreach (EntityMetadata Entity in metaDataResponse.EntityMetadata)
-                {
-                    Tables.Add(Entity.LogicalName);
-                }
-                return Tables;
-            }
-            catch (Exception ex)
-            {
-                return null;
-            }
-        }*/
+        }        
     }
 }

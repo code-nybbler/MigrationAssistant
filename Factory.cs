@@ -6,6 +6,9 @@ using System.Collections.Generic;
 using ClosedXML.Excel;
 using StringFormat = Microsoft.Xrm.Sdk.Metadata.StringFormat;
 using System.IO;
+using static System.Windows.Forms.CheckedListBox;
+using Microsoft.Crm.Sdk.Messages;
+using System.Linq;
 
 namespace MigrationAssistant
 {
@@ -62,7 +65,32 @@ namespace MigrationAssistant
             }
             return Mappings;
         }
-        public void ExportMappingToCSV(string SelectedTableSchema, string SaveFilePath)
+        public void ExportSQLScripts(string SaveFilePath)
+        {
+            string file, row;
+            foreach (Table table in TableList.Where(t => t.MAPPED_ENTITY_NAME != string.Empty))
+            {
+                file = string.Format("{0}/" + table.NAME + ".sql", SaveFilePath);
+
+                using (var stream = File.CreateText(file))
+                {
+                    row = "SELECT";
+                    stream.WriteLine(row);
+
+                    foreach (Field field in table.FIELDS.Where(f => f.MAPPED_FIELD != null))
+                    {
+                        row = string.Format("{0}.{1} as {2}", field.TABLE_NAME, field.COLUMN_NAME, field.MAPPED_FIELD.COLUMN_NAME);
+                        stream.WriteLine(row);
+                    }
+
+                    row = string.Format("FROM {0}.{1}", Database, table.NAME);
+                    stream.WriteLine(row);
+                    
+                    stream.Close();
+                }
+            }
+        }
+        public void ExportMappingToCSV(string SaveFilePath)
         {
             string file = string.Format("{0}/" + Database + "_to_D365_mapping.csv", SaveFilePath);
             string row;
@@ -73,21 +101,16 @@ namespace MigrationAssistant
                 stream.WriteLine(row);
                 foreach (Table table in TableList)
                 {
-                    if ((table.SCHEMA.ToLower() == SelectedTableSchema) || SelectedTableSchema == "")
+                    foreach (Field field in table.FIELDS.Where(f => f.MAPPED_FIELD != null))
                     {
-                        for (int Idx = 0; Idx < table.FIELDS.Count; Idx++)
-                        {
-                            if (table.FIELDS[Idx].MAPPED_FIELD != null)
-                            {
-                                row = string.Format("{0},{1},{2},{3},{4},{5}", table.NAME, table.FIELDS[Idx].COLUMN_NAME, table.FIELDS[Idx].DATA_TYPE, table.MAPPED_ENTITY_NAME, table.FIELDS[Idx].MAPPED_FIELD.COLUMN_NAME, table.FIELDS[Idx].MAPPED_FIELD.DATA_TYPE);
-                                stream.WriteLine(row);
-                            }
-                        }
+                        row = string.Format("{0},{1},{2},{3},{4},{5}", table.NAME, field.COLUMN_NAME, field.DATA_TYPE, table.MAPPED_ENTITY_NAME, field.MAPPED_FIELD.COLUMN_NAME, field.MAPPED_FIELD.DATA_TYPE);
+                        stream.WriteLine(row);
                     }
                 }
+                stream.Close();
             }
         }
-        public void ExportMappingToExcel(string SelectedTableSchema, string SaveFilePath, bool IncludeUnmapped)
+        public void ExportMappingToExcel(string SaveFilePath, bool IncludeUnmapped)
         {
             IXLWorkbook Workbook = new XLWorkbook();
             IXLWorksheet Worksheet = Workbook.Worksheets.Add("Mappings");
@@ -96,7 +119,7 @@ namespace MigrationAssistant
             string TableRange;
             foreach (Table table in TableList)
             {
-                if ((table.SCHEMA.ToLower() == SelectedTableSchema || SelectedTableSchema == string.Empty) && (IncludeUnmapped || table.MAPPED_ENTITY_NAME != string.Empty))
+                if (IncludeUnmapped || table.MAPPED_ENTITY_NAME != string.Empty)
                 {
                     TableRange = "A" + Row;
 
@@ -139,8 +162,10 @@ namespace MigrationAssistant
             
             Workbook.SaveAs(string.Format("{0}/" + Database + "_to_D365_mapping.xlsx", SaveFilePath));
         }
-        public void CreateTable(string SolutionName, string PublisherPrefix, string TableDisplayName, string TablePluralName, string TableName, string TableDescription, string FieldLabel, string FieldSchema, int LengthOrPrecision, int Required)
+        public void CreateTable(string SolutionName, string PublisherPrefix, string TableDisplayName, string TablePluralName, string TableName, string TableDescription, string FieldLabel, string FieldSchema, int LengthOrPrecision, int Required, int LanguageCode)
         {
+            this.LanguageCode = LanguageCode;
+
             CreateEntityRequest createrequest = new CreateEntityRequest
             {
                 // Define the entity
@@ -169,24 +194,70 @@ namespace MigrationAssistant
 
             OrgService.Execute(createrequest);
         }
-        public void CreateTableAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, string DataType, int LengthOrPrecision, int Required)
+        public void CreateTableAttribute(string SolutionName, string PublisherPrefix, int OptionValuePrefix, string TableName, string FieldLabel, string FieldSchema, string DataType, int LengthOrPrecision, CheckedItemCollection OptionSetValues, int Required, EntityMetadata Table, EntityMetadata Target, string RelationshipName, int LanguageCode)
         {
+            this.LanguageCode = LanguageCode;
+
             switch (DataType)
             {
                 // Text
                 case "Single Line of Text": CreateSingleLineAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
                 case "Multiple Lines of Text": CreateMemoAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
                 // Two Option
-                case "Two Option": CreateTwoOptionAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, Required); break;
+                case "Two Options": CreateTwoOptionAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, Required); break;
+                // Picklist
+                case "Option Set": CreatePicklistAttribute(SolutionName, PublisherPrefix, OptionValuePrefix, TableName, FieldLabel, FieldSchema, OptionSetValues, Required); break;
+                case "MultiSelect Option Set": CreateMultiSelectPicklistAttribute(SolutionName, PublisherPrefix, OptionValuePrefix, TableName, FieldLabel, FieldSchema, OptionSetValues, Required); break;
                 // Number
                 case "Whole Number": CreateWholeNumberAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, Required); break;
-                case "Decimal": CreateDecimalAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
-                case "Money": CreateCurrencyAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
+                case "Decimal Number": CreateDecimalAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
+                case "Floating Point Number": CreateDoubleAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
+                case "Currency": CreateCurrencyAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
                 // DateTime
                 case "Date Only":
                 case "Date and Time": CreateDateTimeAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
+                // File
+                case "File": CreateFileAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
+                case "Image": CreateImageAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, LengthOrPrecision, Required); break;
+                // Lookup
+                case "Lookup": CreateLookupAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, Table, Target, RelationshipName, Required); break;
+                case "Customer": CreateCustomerAttribute(SolutionName, PublisherPrefix, TableName, FieldLabel, FieldSchema, Table, Required); break;
                 default: break;
             }
+        }
+        private void CreateFileAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Length, int Required)
+        {
+            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            {
+                EntityName = TableName,
+                Attribute = new FileAttributeMetadata
+                {
+                    SchemaName = PublisherPrefix + FieldSchema,
+                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                    DisplayName = new Label(FieldLabel, LanguageCode),
+                    MaxSizeInKB = Length
+                },
+                SolutionUniqueName = SolutionName
+            };
+
+            OrgService.Execute(CreateAttributeRequest);
+        }
+        private void CreateImageAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Length, int Required)
+        {
+            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            {
+                EntityName = TableName,
+                Attribute = new ImageAttributeMetadata
+                {
+                    SchemaName = PublisherPrefix + FieldSchema,
+                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                    DisplayName = new Label(FieldLabel, LanguageCode),
+                    MaxSizeInKB = Length
+                },
+                SolutionUniqueName = SolutionName
+            };
+
+            OrgService.Execute(CreateAttributeRequest);
         }
         private void CreateSingleLineAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Length, int Required)
         {
@@ -204,9 +275,7 @@ namespace MigrationAssistant
                 SolutionUniqueName = SolutionName
             };
 
-            OrgService.Execute(CreateAttributeRequest);           
-
-            Console.WriteLine($"\nThe [{FieldLabel}] text attribute has been added to the [{TableName}] entity.");
+            OrgService.Execute(CreateAttributeRequest);
         }
         private void CreateMemoAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Length, int Required)
         {
@@ -224,9 +293,7 @@ namespace MigrationAssistant
                 SolutionUniqueName = SolutionName
             };
 
-            OrgService.Execute(CreateAttributeRequest);           
-
-            Console.WriteLine($"\nThe [{FieldLabel}] memo attribute has been added to the [{TableName}] entity.");
+            OrgService.Execute(CreateAttributeRequest);
         }
         private void CreateWholeNumberAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Required)
         {
@@ -244,9 +311,7 @@ namespace MigrationAssistant
                 SolutionUniqueName = SolutionName
             };
 
-            OrgService.Execute(CreateAttributeRequest);          
-
-            Console.WriteLine($"\nThe [{FieldLabel}] whole number attribute has been added to the [{TableName}] entity.");
+            OrgService.Execute(CreateAttributeRequest);
         }
         private void CreateDecimalAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Precision, int Required)
         {
@@ -266,8 +331,25 @@ namespace MigrationAssistant
             };
 
             OrgService.Execute(CreateAttributeRequest);
+        }
+        private void CreateDoubleAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Precision, int Required)
+        {
+            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            {
+                EntityName = TableName,
+                Attribute = new DoubleAttributeMetadata
+                {
+                    SchemaName = PublisherPrefix + FieldSchema,
+                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                    DisplayName = new Label(FieldLabel, LanguageCode),
+                    MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
+                    MinValue = IntegerAttributeMetadata.MinSupportedValue,
+                    Precision = Precision
+                },
+                SolutionUniqueName = SolutionName
+            };
 
-            Console.WriteLine($"\nThe [{FieldLabel}] decimal number attribute has been added to the [{TableName}] entity.");
+            OrgService.Execute(CreateAttributeRequest);
         }
         private void CreateCurrencyAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Precision, int Required)
         {
@@ -287,24 +369,50 @@ namespace MigrationAssistant
             };
 
             OrgService.Execute(CreateAttributeRequest);
-
-            Console.WriteLine($"\nThe [{FieldLabel}] currency attribute has been added to the [{TableName}] entity.");
         }
-        private void CreatePicklistAttribute(string TableName, ref Field field, Dictionary<int, string> Values, string FieldSchema, int Required)
+        private void CreateMultiSelectPicklistAttribute(string SolutionName, string PublisherPrefix, int OptionValuePrefix, string TableName, string FieldLabel, string FieldSchema, CheckedItemCollection OptionSetValues, int Required)
         {
-            /*Console.WriteLine("\nCreating picklist attribute...");
-            //string FieldLabel = SplitCamelCase(FieldSchema.ToLower().EndsWith("id") ? FieldSchema.Substring(0,FieldSchema.Length-2) : FieldSchema);   
-
             OptionSetMetadata OptionSetMeta = new OptionSetMetadata
             {
                 IsGlobal = false,
                 OptionSetType = OptionSetType.Picklist
             };
 
-            foreach (KeyValuePair<int, string> Pair in Values)
+            int OptionValue = OptionValuePrefix;
+            foreach (string OptionSetValue in OptionSetValues)
             {
-                if(Pair.Value != null) OptionSetMeta.Options.Add(new OptionMetadata(new Label(Pair.Value, LanguageCode), Pair.Key));
-                else OptionSetMeta.Options.Add(new OptionMetadata(new Label(Pair.Value, LanguageCode), Pair.Key));
+                Label label = new Label(OptionSetValue, LanguageCode);
+                OptionSetMeta.Options.Add(new OptionMetadata(label, OptionValue++));
+            }
+
+            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            {
+                EntityName = TableName,
+                Attribute = new MultiSelectPicklistAttributeMetadata
+                {
+                    SchemaName = PublisherPrefix + FieldSchema,
+                    DisplayName = new Label(FieldLabel, LanguageCode),
+                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                    OptionSet = OptionSetMeta
+                },
+                SolutionUniqueName = SolutionName
+            };
+
+            OrgService.Execute(CreateAttributeRequest);
+        }
+        private void CreatePicklistAttribute(string SolutionName, string PublisherPrefix, int OptionValuePrefix, string TableName, string FieldLabel, string FieldSchema, CheckedItemCollection OptionSetValues, int Required)
+        {
+            OptionSetMetadata OptionSetMeta = new OptionSetMetadata
+            {
+                IsGlobal = false,
+                OptionSetType = OptionSetType.Picklist
+            };
+
+            int OptionValue = OptionValuePrefix;
+            foreach (string OptionSetValue in OptionSetValues)
+            {
+                Label label = new Label(OptionSetValue, LanguageCode);
+                OptionSetMeta.Options.Add(new OptionMetadata(label, OptionValue++));
             }
 
             CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
@@ -320,9 +428,7 @@ namespace MigrationAssistant
                 SolutionUniqueName = SolutionName
             };
 
-            OrgService.Execute(CreateAttributeRequest);           
-
-            Console.WriteLine($"\nThe [{FieldLabel}] picklist attribute has been added to the [{TableName}] entity.");*/
+            OrgService.Execute(CreateAttributeRequest);
         }
         private void CreateDateTimeAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Precision, int Required)
         {
@@ -341,14 +447,10 @@ namespace MigrationAssistant
                 SolutionUniqueName = SolutionName
             };
 
-            OrgService.Execute(CreateAttributeRequest);          
-
-            Console.WriteLine($"\nThe [{FieldLabel}] date attribute has been added to the [{TableName}] entity.");
+            OrgService.Execute(CreateAttributeRequest);
         }
         private void CreateTwoOptionAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Required)
         {
-            Console.WriteLine("\nCreating two option attribute...");
-
             CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
             {
                 EntityName = TableName,
@@ -366,97 +468,123 @@ namespace MigrationAssistant
             };
 
             OrgService.Execute(CreateAttributeRequest);
-
-            Console.WriteLine($"\nThe [{FieldLabel}] two option attribute has been added to the [{TableName}] entity.");
         }
-        private void CreateLookupAttribute(Key key)
+        private void CreateLookupAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, EntityMetadata Table, EntityMetadata Target, string RelationshipName, int Required)
         {
-            // if field name is longer than 50 (46 without prefix) char limit, remove table name
-            /*string FieldSchema = key.COLUMN_NAME.Length <= 46 || key.COLUMN_NAME.ToLower() == key.TABLE.ToLower() ? key.COLUMN_NAME : key.COLUMN_NAME.Replace(key.TABLE, "");
-            FieldSchema = FieldSchema.ToLower().EndsWith("id") ? FieldSchema.Substring(0, FieldSchema.Length - 2) : FieldSchema;
-
-            //string FieldLabel = SplitCamelCase(FieldSchema);
-
-            // find related table name
-            string RelatedTable = ExistingTables.Find(x => x.Contains("_" + key.REFERENCED_TABLE.ToLower()) && x.Length <= key.REFERENCED_TABLE.Length+4); // custom tables take precendence over OOB
-
-            if (RelatedTable == null) // check OOB tables
+            CreateOneToManyRequest CreateAttributeRequest = new CreateOneToManyRequest()
             {
-                RelatedTable = ExistingTables.Find(x => x == key.REFERENCED_TABLE.ToLower());
-            }
-            if (RelatedTable == null)
-            {
-                RelatedTable = PublisherPrefix + key.REFERENCED_TABLE.ToLower();
-            }
-
-            EntityMetadata PrimaryTable = RetrieveEntityMetaData(ExistingTables.Find(x => x == key.D365_TABLE_NAME || x.Contains("_" + key.D365_TABLE_NAME))); // table exists
-            EntityMetadata SecondaryTable = RetrieveEntityMetaData(RelatedTable); // related table exists
-
-            if (PrimaryTable != null && SecondaryTable != null) // both tables exist
-            {
-                string RelatedTableLabel, RelatedTablePluralLabel;
-                AttributeMetadata AttributeMetaData = PrimaryTable.Attributes.FirstOrDefault(a => a.LogicalName == PublisherPrefix + FieldSchema.ToLower());
-
-                //RelatedTableLabel = RemovePunctuations(SplitCamelCase(key.TABLE));
-                if (AttributeMetaData == null) // lookup does not already exist
+                Lookup = new LookupAttributeMetadata()
                 {
-                    if (RelatedTableLabel.EndsWith("s"))
-                    {
-                        RelatedTablePluralLabel = RelatedTableLabel + "es";
-                    }
-                    else if (Regex.IsMatch(RelatedTableLabel, "\b.*(a|e|i|o|u)y\b"))
-                    {
-                        RelatedTablePluralLabel = RelatedTableLabel + "s";
-                    }
-                    else if (RelatedTableLabel.EndsWith("y"))
-                    {
-                        RelatedTablePluralLabel = RelatedTableLabel.Substring(0, RelatedTableLabel.Length - 1) + "ies";
-                    }
-                    else
-                    {
-                        RelatedTablePluralLabel = RelatedTableLabel + "s";
-                    }
+                    DisplayName = new Label(FieldLabel, LanguageCode),
+                    LogicalName = PublisherPrefix + FieldSchema.ToLower(),
+                    SchemaName = PublisherPrefix + FieldSchema,
+                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required)
 
-                    CreateOneToManyRequest CreateAttributeRequest = new CreateOneToManyRequest()
+                },
+                OneToManyRelationship = new OneToManyRelationshipMetadata()
+                {
+                    AssociatedMenuConfiguration = new AssociatedMenuConfiguration()
                     {
-                        Lookup = new LookupAttributeMetadata()
-                        {
-                            DisplayName = new Label(FieldLabel, LanguageCode),
-                            LogicalName = PublisherPrefix + FieldSchema + "id",
-                            SchemaName = PublisherPrefix + FieldSchema + "Id", // for consistency
-                            RequiredLevel = new AttributeRequiredLevelManagedProperty(AttributeRequiredLevel.None)
+                        Behavior = AssociatedMenuBehavior.UseCollectionName,
+                        Group = AssociatedMenuGroup.Details,
+                        Label = new Label(Table.DisplayCollectionName.UserLocalizedLabel.Label, LanguageCode),
+                        Order = 10000
+                    },
+                    CascadeConfiguration = new CascadeConfiguration()
+                    {
+                        Assign = CascadeType.NoCascade,
+                        Delete = CascadeType.RemoveLink,
+                        Merge = CascadeType.NoCascade,
+                        Reparent = CascadeType.NoCascade,
+                        Share = CascadeType.NoCascade,
+                        Unshare = CascadeType.NoCascade
+                    },
+                    ReferencedEntity = Target.LogicalName,
+                    ReferencedAttribute = Target.PrimaryIdAttribute,
+                    ReferencingEntity = TableName,
+                    SchemaName = PublisherPrefix + RelationshipName
+                },
+                SolutionUniqueName = SolutionName
+            };
 
-                        },
-                        OneToManyRelationship = new OneToManyRelationshipMetadata()
-                        {
-                            AssociatedMenuConfiguration = new AssociatedMenuConfiguration()
-                            {
-                                Behavior = AssociatedMenuBehavior.UseCollectionName,
-                                Group = AssociatedMenuGroup.Details,
-                                Label = new Label(RelatedTablePluralLabel, LanguageCode),
-                                Order = 10000
-                            },
-                            CascadeConfiguration = new CascadeConfiguration()
-                            {
-                                Assign = CascadeType.NoCascade,
-                                Delete = CascadeType.RemoveLink,
-                                Merge = CascadeType.NoCascade,
-                                Reparent = CascadeType.NoCascade,
-                                Share = CascadeType.NoCascade,
-                                Unshare = CascadeType.NoCascade
-                            },
-                            ReferencedEntity = RelatedTable,
-                            ReferencedAttribute = RelatedTable + "id",
-                            ReferencingEntity = key.D365_TABLE_NAME,
-                            SchemaName = (PublisherPrefix + RelatedTable).Replace(PublisherPrefix+PublisherPrefix, PublisherPrefix) + "_" + key.D365_TABLE_NAME + "_" + FieldSchema.ToLower()
-                        },
-                        SolutionUniqueName = SolutionName
-                    };
+            OrgService.Execute(CreateAttributeRequest);
+        }
+        private void CreateCustomerAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, EntityMetadata Table, int Required)
+        {
+            string ToAccount = PublisherPrefix + "account_" + Table.LogicalName + "_" + FieldSchema;
+            string ToContact = PublisherPrefix + "contact_" + Table.LogicalName + "_" + FieldSchema;
 
-                    OrgService.Execute(CreateAttributeRequest);
-                    Console.WriteLine($"\nThe [{FieldLabel}] lookup attribute has been added to the [{PrimaryTable.DisplayName.UserLocalizedLabel.Label}] entity.");
+            List<OneToManyRelationshipMetadata> Relationships = new List<OneToManyRelationshipMetadata>
+            {
+                new OneToManyRelationshipMetadata
+                {
+                    AssociatedMenuConfiguration = new AssociatedMenuConfiguration()
+                    {
+                        Behavior = AssociatedMenuBehavior.UseCollectionName,
+                        Group = AssociatedMenuGroup.Details,
+                        Label = new Label(Table.DisplayCollectionName.UserLocalizedLabel.Label, LanguageCode),
+                        Order = 10000
+                    },
+                    CascadeConfiguration = new CascadeConfiguration()
+                    {
+                        Assign = CascadeType.NoCascade,
+                        Delete = CascadeType.RemoveLink,
+                        Merge = CascadeType.NoCascade,
+                        Reparent = CascadeType.NoCascade,
+                        Share = CascadeType.NoCascade,
+                        Unshare = CascadeType.NoCascade
+                    },
+                    ReferencedEntity = "account",
+                    ReferencedAttribute = "accountid",
+                    ReferencingEntity = Table.LogicalName,
+                    SchemaName = ToAccount
+                },
+                new OneToManyRelationshipMetadata
+                {
+                    AssociatedMenuConfiguration = new AssociatedMenuConfiguration()
+                    {
+                        Behavior = AssociatedMenuBehavior.UseCollectionName,
+                        Group = AssociatedMenuGroup.Details,
+                        Label = new Label(Table.DisplayCollectionName.UserLocalizedLabel.Label, LanguageCode),
+                        Order = 10000
+                    },
+                    CascadeConfiguration = new CascadeConfiguration()
+                    {
+                        Assign = CascadeType.NoCascade,
+                        Delete = CascadeType.RemoveLink,
+                        Merge = CascadeType.NoCascade,
+                        Reparent = CascadeType.NoCascade,
+                        Share = CascadeType.NoCascade,
+                        Unshare = CascadeType.NoCascade
+                    },
+                    ReferencedEntity = "contact",
+                    ReferencedAttribute = "contactid",
+                    ReferencingEntity = Table.LogicalName,
+                    SchemaName = ToContact
                 }
-            }*/
-        }                
+            };
+
+            try
+            {
+                CreatePolymorphicLookupAttributeRequest CreateAttributeRequest = new CreatePolymorphicLookupAttributeRequest
+                {
+                    Lookup = new LookupAttributeMetadata()
+                    {
+                        LogicalName = PublisherPrefix + FieldSchema.ToLower(),
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        DisplayName = new Label(FieldLabel, 1033),
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required)
+                    },
+                    OneToManyRelationships = Relationships.ToArray(),
+                    SolutionUniqueName = SolutionName
+                };
+
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
     }
 }

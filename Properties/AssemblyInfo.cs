@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 // General Information about an assembly is controlled through the following 
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("Migration Assistant")]
+[assembly: AssemblyTitle("MigrationAssistant")]
 [assembly: AssemblyDescription("Aids in the mapping process of migration")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Luke Thomas")]

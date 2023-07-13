@@ -1,4 +1,5 @@
-﻿using McTools.Xrm.Connection;
+﻿using ClosedXML.Excel;
+using McTools.Xrm.Connection;
 using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
@@ -12,20 +13,22 @@ using System.ServiceModel;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using XrmToolBox.Extensibility;
+using static System.Windows.Forms.CheckedListBox;
 using SelectionMode = System.Windows.Forms.SelectionMode;
 
 namespace MigrationAssistant
 {
     public partial class MigrationAssistantControl : PluginControlBase
     {
-        private Dictionary<string, Guid> solutions;
+        private List<Entity> solutions;
         private List<Field> mappings;
         Dictionary<string, IEnumerable<EntityMetadata>> entities;
         private ListBox sourceTab, destinationTab;
         private Field sourceField, destinationField;
         private string solution, prefix, schemaFormat, serverConnectionString, database, tableOrSchema, tableToPublish, saveFilePath;
-        private int sourceItemIdx, destinationItemIdx, mode;
+        private int optionValuePrefix, sourceItemIdx, mode, languageCode;
         private Factory EntityFactory;
+        private Dictionary<int, string> languages;
 
         public MigrationAssistantControl()
         {
@@ -34,40 +37,7 @@ namespace MigrationAssistant
 
         private void box_DataType_SelectedIndexChanged(object sender, EventArgs e)
         {
-            switch (box_DataType.Text)
-            {
-                case "Single Line of Text":
-                    num_FieldLength.Enabled = true;
-                    num_FieldLength.Value = 100;
-                    num_FieldLength.Minimum = 0;
-                    num_FieldLength.Maximum = 4000;
-                    break;
-                case "Multiple Lines of Text":
-                    num_FieldLength.Enabled = true;
-                    num_FieldLength.Value = 2000;
-                    num_FieldLength.Minimum = 0;
-                    num_FieldLength.Maximum = 1048576;
-                    break;
-                case "Whole Number":
-                    num_FieldLength.Value = 0;
-                    num_FieldLength.Enabled = false;
-                    break;
-                case "Decimal":
-                    num_FieldLength.Enabled = true;
-                    num_FieldLength.Value = 2;
-                    num_FieldLength.Minimum = 0;
-                    num_FieldLength.Maximum = 10;
-                    break;
-                case "Money":
-                    num_FieldLength.Enabled = true;
-                    num_FieldLength.Value = 2;
-                    num_FieldLength.Minimum = 0;
-                    num_FieldLength.Maximum = 4;
-                    break;
-                default: num_FieldLength.Enabled = false; break;
-            }
-
-            if (CanCreateField()) btn_CreateField.Enabled = true;
+            ExecuteMethod(ToggleFieldInputs);
         }
         private void box_Format_SelectedIndexChanged(object sender, EventArgs e)
         {
@@ -88,6 +58,19 @@ namespace MigrationAssistant
                 txt_TableName.Text = ApplySelectedFormat(txt_TableDisplayName.Text);
             }
         }
+        private void box_Language_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (box_Language.SelectedItem != null)
+            {
+                string pattern = @"[0-9]+";
+
+                Match match = Regex.Match(box_Language.SelectedItem.ToString(), pattern);
+                if (match != null)
+                {
+                    languageCode = int.Parse(match.Value);
+                }
+            }
+        }
         private void box_PrimaryRequirement_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (CanCreateTable()) btn_CreateTable.Enabled = true;
@@ -104,6 +87,23 @@ namespace MigrationAssistant
         private void box_Table_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (CanCreateField()) btn_CreateField.Enabled = true;
+
+            if (box_Target.SelectedItem != null && box_Table.SelectedItem != null && txt_FieldName.Text != string.Empty)
+            {
+                txt_RelationshipName.Text = box_Target.SelectedItem.ToString() + "_" + box_Table.SelectedItem.ToString() + "_" + txt_FieldName.Text;
+            }
+
+            if ((box_Table.SelectedItem.ToString() == "account" || box_Table.SelectedItem.ToString() == "contact") && box_DataType.SelectedItem.ToString() == "Customer")
+            {
+                MessageBox.Show("Polymorphic lookups cannot be self-referential.");
+            }
+        }
+        private void box_Target_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (box_Target.SelectedItem != null && box_Table.SelectedItem != null && txt_FieldName.Text != string.Empty)
+            {
+                txt_RelationshipName.Text = box_Target.SelectedItem.ToString() + "_" + box_Table.SelectedItem.ToString() + "_" + txt_FieldName.Text;
+            }
         }
         private void btn_Close_Click(object sender, EventArgs e)
         {
@@ -116,10 +116,9 @@ namespace MigrationAssistant
                 serverConnectionString = box_Server.Text;
                 database = box_Database.Text;
                 mode = box_Mode.SelectedIndex;
-                tableOrSchema = box_TableSchema.Text;
+                tableOrSchema = box_TableSchema.Text.ToLower();
 
                 EntityFactory.Database = database;
-                EntityFactory.InspectData = box_InspectData.Checked;
                 EntityFactory.IgnoreEmpty = box_IgnoreEmpty.Checked;
                 EntityFactory.Connection = new SqlConnection(serverConnectionString);
 
@@ -130,7 +129,30 @@ namespace MigrationAssistant
         {
             if (solution != null && prefix != null && box_Table.SelectedItem != null && txt_FieldDisplayName.Text != string.Empty && box_DataType.SelectedItem != null)
             {
-                ExecuteMethod(CreateField);
+                CheckedItemCollection optionSetValues = null;
+                bool createField = true;
+
+                if (box_DataType.SelectedItem.ToString() == "Option Set" || box_DataType.SelectedItem.ToString() == "MultiSelect Option Set")
+                {
+                    bool useValues;
+                    var useValuesConfirmation = MessageBox.Show("Do you want to use the selected distinct values?", "Confirmation", MessageBoxButtons.YesNo);
+                    useValues = useValuesConfirmation == DialogResult.Yes;
+
+                    if (useValues)
+                    {
+                        if (lst_Values.CheckedItems.Count > 0)
+                        {
+                            optionSetValues = lst_Values.CheckedItems;
+                        }
+                        else
+                        {
+                            var continueConfirmation = MessageBox.Show("No values have been selected. Do you want to continue?", "Confirmation", MessageBoxButtons.YesNo);
+                            createField = continueConfirmation == DialogResult.Yes;
+                        }
+                    }
+                }
+
+                if (createField) CreateField(optionSetValues);
             }
         }
         private void btn_CreateTable_Click(object sender, EventArgs e)
@@ -155,6 +177,33 @@ namespace MigrationAssistant
             includeUnmapped = includeUnmappedConfirmation == DialogResult.Yes;
 
             ExportExcel(includeUnmapped);
+        }
+        private void btn_ExportSQL_Click(object sender, EventArgs e)
+        {
+            using (var selectedFolder = new FolderBrowserDialog())
+            {
+                if (selectedFolder.ShowDialog() == DialogResult.OK)
+                {
+                    saveFilePath = selectedFolder.SelectedPath;
+                    ExecuteMethod(ExportSQLScripts);
+                }
+            }
+        }
+        private void btn_GetValues_Click(object sender, EventArgs e)
+        {
+            lst_Values.Items.Clear();
+            Table sourceTable = EntityFactory.TableList.Find(t => t.NAME == sourceField.TABLE_NAME);
+
+            if (sourceTable != null)
+            {
+                btn_GetValues.Enabled = false;
+
+                Dictionary<int, string> values = EntityFactory.GetDistinctValues(sourceField.COLUMN_NAME, sourceTable, null, string.Empty);
+                foreach (KeyValuePair<int, string> kv in values)
+                {
+                    lst_Values.Items.Add(kv.Value);
+                }
+            }
         }
         private void btn_ImportCSV_Click(object sender, EventArgs e)
         {
@@ -231,6 +280,22 @@ namespace MigrationAssistant
         {
             ExecuteMethod(PublishCustomizations);
         }
+        private void btn_Refresh_Click(object sender, EventArgs e)
+        {
+            if (destinationTab != null)
+            {
+                EntityMetadata entity = GetEntityMetaData(destinationTab.Name);
+
+                if (entity != null)
+                {
+                    destinationTab.Items.Clear();
+                    foreach (AttributeMetadata field in entity.Attributes)
+                    {
+                        destinationTab.Items.Add(field.LogicalName + " (" + field.AttributeTypeName.Value.Replace("Type", string.Empty) + ")");
+                    }
+                }
+            }
+        }
         private void btn_SaveCSV_Click(object sender, EventArgs e)
         {
             using (var selectedFolder = new FolderBrowserDialog())
@@ -279,8 +344,11 @@ namespace MigrationAssistant
         }
         private void destinationTabControl_SelectedIndexChanged(object sender, EventArgs e)
         {
-            destinationTab = (ListBox)((TabControl)sender).TabPages[((TabControl)sender).SelectedIndex].Controls[0];
-            destinationField = null;
+            if (((TabControl)sender).SelectedIndex > -1)
+            {
+                destinationTab = (ListBox)((TabControl)sender).TabPages[((TabControl)sender).SelectedIndex].Controls[0];
+                destinationField = null;
+            }
         }
         private void DestinationField_Click(object sender, EventArgs e)
         {
@@ -300,15 +368,17 @@ namespace MigrationAssistant
             if (lst_Solutions.CheckedItems.Count > 0)
             {
                 btn_LoadSolutionEntities.Enabled = true;
-                box_Solution.Text = lst_Solutions.CheckedItems[0].ToString();
                 box_Solution.Enabled = true;
 
-                ExecuteMethod(SelectSolution);
-
                 box_Solution.Items.Clear();
-                foreach (string item in lst_Solutions.CheckedItems)
+                foreach (int idx in lst_Solutions.CheckedIndices)
                 {
-                    box_Solution.Items.Add(item);
+                    if (solutions.Find(s => s["uniquename"].ToString() == lst_Solutions.Items[idx].ToString() && s.GetAttributeValue<bool>("ismanaged") == false) != null)
+                    {
+                        box_Solution.Items.Add(lst_Solutions.Items[idx]);
+                        // set selected solution for new components to found unmanaged solution
+                        box_Solution.SelectedIndex = idx;
+                    }
                 }
             }
             else
@@ -318,11 +388,14 @@ namespace MigrationAssistant
         }
         private void sourceTabControl_SelectedIndexChanged(object sender, EventArgs e)
         {
-            sourceTab = (ListBox)((TabControl)sender).TabPages[((TabControl)sender).SelectedIndex].Controls[0];
-            sourceField = null;
+            if (((TabControl)sender).SelectedIndex > -1)
+            {
+                sourceTab = (ListBox)((TabControl)sender).TabPages[((TabControl)sender).SelectedIndex].Controls[0];
+                sourceField = null;
 
-            txt_TableDisplayName.Text = sourceTab.Name;
-            txt_PrimaryDisplayName.Text = "Name";
+                txt_TableDisplayName.Text = sourceTab.Name;
+                txt_PrimaryDisplayName.Text = "Name";
+            }
         }
         private void SourceField_Click(object sender, EventArgs e)
         {
@@ -334,6 +407,9 @@ namespace MigrationAssistant
             {
                 string fieldName = sourceTab.SelectedItem.ToString().Split('(')[0].Trim(' ');
                 string dataType = sourceTab.SelectedItem.ToString().Split('(')[1].Split(')')[0];
+
+                lst_Values.Items.Clear();
+                btn_GetValues.Enabled = true;
 
                 if (destinationTab != null)
                 {
@@ -379,6 +455,8 @@ namespace MigrationAssistant
                 sourceField = EntityFactory.TableList.Find(t => t.NAME == sourceTab.Name).FIELDS.Find(f => f.COLUMN_NAME == fieldName);
 
                 if (destinationTab != null && destinationTab.SelectedItem != null) btn_Map.Enabled = true;
+
+                ExecuteMethod(ToggleFieldInputs);
             }
         }
         private void txt_FieldDisplayName_TextChanged(object sender, EventArgs e)
@@ -397,6 +475,11 @@ namespace MigrationAssistant
                 txt_FieldName.Text = RemovePunctuations(txt_FieldName.Text);
 
                 if (CanCreateField()) btn_CreateField.Enabled = true;
+            }
+
+            if (box_Target.SelectedItem != null && box_Table.SelectedItem != null && txt_FieldName.Text != string.Empty)
+            {
+                txt_RelationshipName.Text = box_Target.SelectedItem.ToString() + "_" + box_Table.SelectedItem.ToString() + "_" + txt_FieldName.Text;
             }
         }
         private void txt_PrimaryDisplayName_TextChanged(object sender, EventArgs e)
@@ -429,8 +512,8 @@ namespace MigrationAssistant
                 else tablePluralName = txt_TableDisplayName.Text + "s";
 
                 txt_TablePluralName.Text = tablePluralName;
-
                 txt_TableName.Text = ApplySelectedFormat(txt_TableDisplayName.Text);
+                txt_tableDescription.Text = "A table to hold " + txt_TableDisplayName.Text + " records.";
 
                 if (CanCreateTable()) btn_CreateTable.Enabled = true;
             }
@@ -472,7 +555,9 @@ namespace MigrationAssistant
         }
         private bool CanCreateField()
         {
-            return txt_FieldDisplayName.Text != string.Empty && txt_FieldName.Text != string.Empty && box_DataType.Text != string.Empty && box_Table.Text != string.Empty && box_Requirement.SelectedItem != null;
+            return txt_FieldDisplayName.Text != string.Empty && txt_FieldName.Text != string.Empty && box_DataType.Text != string.Empty && box_Table.Text != string.Empty && box_Requirement.SelectedItem != null
+                && ((box_Target.SelectedItem != null && txt_RelationshipName.Text != string.Empty) || box_DataType.SelectedItem.ToString() != "Lookup")
+                && ((box_Table.SelectedItem.ToString() != "account" && box_Table.SelectedItem.ToString() != "contact") || box_DataType.SelectedItem.ToString() != "Customer");
         }
         private bool CanCreateTable()
         {
@@ -487,7 +572,7 @@ namespace MigrationAssistant
                 RetrieveEntityRequest req = new RetrieveEntityRequest()
                 {
                     EntityFilters = EntityFilters.Attributes,
-                    LogicalName = prefix + tableName,
+                    LogicalName = tableName,
                     RetrieveAsIfPublished = true
                 };
 
@@ -495,7 +580,7 @@ namespace MigrationAssistant
                 {
                     foreach (AttributeMetadata am in (Service.Execute(req) as RetrieveEntityResponse).EntityMetadata.Attributes)
                     {
-                        if (am.LogicalName == fieldName)
+                        if (am.LogicalName == (prefix + fieldName).ToLower())
                         {
                             exists = true;
                             break;
@@ -509,7 +594,7 @@ namespace MigrationAssistant
                 return exists;
             }
         }
-        private void CreateField()
+        private void CreateField(CheckedItemCollection optionSetValues)
         {
             string table = box_Table.SelectedItem.ToString();
             string fieldLabel = txt_FieldDisplayName.Text;
@@ -518,11 +603,27 @@ namespace MigrationAssistant
             int length = (int)num_FieldLength.Value;
             int required = box_Requirement.SelectedIndex == 0 ? 0 : box_Requirement.SelectedIndex + 1;
 
+            EntityMetadata tableEM = entities[solution].ToList().Find(e => e.LogicalName == table);
+            EntityMetadata targetEM = null;
+            string relationshipName = string.Empty;
+
+            if (box_Target.SelectedItem != null)
+            {
+                string targetSolution = entities.Keys.ToList().Find(s => entities[s].ToList().Find(e => e.LogicalName == box_Target.SelectedItem.ToString()) != null);
+                if (targetSolution != null)
+                {
+                    targetEM = entities[targetSolution].ToList().Find(e => e.LogicalName == box_Target.SelectedItem.ToString());
+                    relationshipName = txt_RelationshipName.Text;
+                }
+                else
+                {
+                    MessageBox.Show("Unable to find encompassing solution from solutions list.");
+                }
+            }
+
             if (!CheckFieldExists(table, fieldSchema))
             {
                 btn_CreateField.Enabled = false;
-                btn_Connect.Enabled = false;
-                btn_LoadSolutionEntities.Enabled = false;
                 ExecuteMethod(DisableInputs);
 
                 WorkAsync(new WorkAsyncInfo
@@ -531,7 +632,7 @@ namespace MigrationAssistant
                     Work = (w, e) =>
                     {
                         // This code is executed in another thread
-                        EntityFactory.CreateTableAttribute(solution, prefix, table, fieldLabel, fieldSchema, dataType, length, required);
+                        EntityFactory.CreateTableAttribute(solution, prefix, optionValuePrefix, table, fieldLabel, fieldSchema, dataType, length, optionSetValues, required, tableEM, targetEM, relationshipName, languageCode);
 
                         w.ReportProgress(-1, "Attribute created successfully.");
                         e.Result = 1;
@@ -546,8 +647,6 @@ namespace MigrationAssistant
                         tableToPublish = table;
 
                         btn_PublishField.Enabled = true;
-                        btn_Connect.Enabled = true;
-                        btn_LoadSolutionEntities.Enabled = true;
                         ExecuteMethod(EnableInputs);
                     },
                     AsyncArgument = null,
@@ -555,6 +654,10 @@ namespace MigrationAssistant
                     MessageWidth = 340,
                     MessageHeight = 150
                 });
+            }
+            else
+            {
+                MessageBox.Show("There is already a field with the name " + prefix+fieldSchema + " on the " + table + " table.");
             }
         }
         private void CreateTable()
@@ -569,11 +672,9 @@ namespace MigrationAssistant
             if (box_PrimaryRequirement.SelectedIndex > -1) primaryReq = box_PrimaryRequirement.SelectedIndex == 0 ? 0 : box_PrimaryRequirement.SelectedIndex + 1;
 
             // Check if entity already exists
-            if (RetrieveEntityMetaData(tableName) == null)
+            if (GetEntityMetaData(prefix + tableName.ToLower()) == null)
             {
                 btn_CreateTable.Enabled = false;
-                btn_Connect.Enabled = false;
-                btn_LoadSolutionEntities.Enabled = false;
                 ExecuteMethod(DisableInputs);
 
                 WorkAsync(new WorkAsyncInfo
@@ -582,7 +683,7 @@ namespace MigrationAssistant
                     Work = (w, e) =>
                     {
                         // This code is executed in another thread
-                        EntityFactory.CreateTable(solution, prefix, tableDisplayName, tablePluralName, tableName, tableDesc, primaryDisplayName, primaryName, primaryLength, primaryReq);
+                        EntityFactory.CreateTable(solution, prefix, tableDisplayName, tablePluralName, tableName, tableDesc, primaryDisplayName, primaryName, primaryLength, primaryReq, languageCode);
 
                         w.ReportProgress(-1, "Entity created successfully.");
                         e.Result = 1;
@@ -594,12 +695,10 @@ namespace MigrationAssistant
                     PostWorkCallBack = e =>
                     {
                         // This code is executed in the main thread
-                        EntityMetadata resultEntity = RetrieveEntityMetaData(tableName.ToLower()); // Retrieve newly created entity
+                        EntityMetadata resultEntity = GetEntityMetaData(prefix + tableName.ToLower()); // Retrieve newly created entity
                         tableToPublish = resultEntity.LogicalName;
 
                         btn_PublishEntity.Enabled = true;
-                        btn_Connect.Enabled = true;
-                        btn_LoadSolutionEntities.Enabled = true;
                         ExecuteMethod(EnableInputs);
                     },
                     AsyncArgument = null,
@@ -618,12 +717,12 @@ namespace MigrationAssistant
             lst_Solutions.Enabled = false;
             box_Solution.Enabled = false;
             box_Format.Enabled = false;
+            box_Language.Enabled = false;
             box_Table.Enabled = false;
             box_DataType.Enabled = false;
             txt_FieldDisplayName.Enabled = false;
             txt_FieldName.Enabled = false;
             box_Requirement.Enabled = false;
-            num_FieldLength.Enabled = false;
             txt_TableDisplayName.Enabled = false;
             txt_TablePluralName.Enabled = false;
             txt_TableName.Enabled = false;
@@ -631,19 +730,22 @@ namespace MigrationAssistant
             txt_PrimaryDisplayName.Enabled = false;
             txt_PrimaryName.Enabled = false;
             box_PrimaryRequirement.Enabled = false;
-            num_PrimaryLength.Enabled = false;
+            box_Target.Enabled = false;
+            txt_RelationshipName.Enabled = false;
+            num_MinValue.Enabled = false;
+            num_MaxValue.Enabled = false;
         }
         private void EnableInputs()
         {
             lst_Solutions.Enabled = true;
             box_Solution.Enabled = true;
             box_Format.Enabled = true;
+            box_Language.Enabled = true;
             box_Table.Enabled = true;
             box_DataType.Enabled = true;
             txt_FieldDisplayName.Enabled = true;
             txt_FieldName.Enabled = true;
             box_Requirement.Enabled = true;
-            num_FieldLength.Enabled = true;
             txt_TableDisplayName.Enabled = true;
             txt_TablePluralName.Enabled = true;
             txt_TableName.Enabled = true;
@@ -651,7 +753,10 @@ namespace MigrationAssistant
             txt_PrimaryDisplayName.Enabled = true;
             txt_PrimaryName.Enabled = true;
             box_PrimaryRequirement.Enabled = true;
-            num_PrimaryLength.Enabled = true;
+            box_Target.Enabled = true;
+            txt_RelationshipName.Enabled = true;
+            num_MinValue.Enabled = true;
+            num_MaxValue.Enabled = true;
         }
         private void ExportExcel(bool includeUnmapped)
         {
@@ -661,7 +766,7 @@ namespace MigrationAssistant
                 Work = (w, e) =>
                 {
                     // This code is executed in another thread
-                    EntityFactory.ExportMappingToExcel(tableOrSchema, saveFilePath, includeUnmapped);
+                    EntityFactory.ExportMappingToExcel(saveFilePath, includeUnmapped);
 
                     w.ReportProgress(-1, "Exported to Excel successfully.");
                     e.Result = 1;
@@ -680,6 +785,132 @@ namespace MigrationAssistant
                 MessageWidth = 340,
                 MessageHeight = 150
             });
+        }
+        private void ExportSQLScripts()
+        {
+            WorkAsync(new WorkAsyncInfo
+            {
+                Message = "Generating scripts...",
+                Work = (w, e) =>
+                {
+                    // This code is executed in another thread
+                    EntityFactory.ExportSQLScripts(saveFilePath);
+
+                    w.ReportProgress(-1, "Scripts saved successfully.");
+                    e.Result = 1;
+                },
+                ProgressChanged = e =>
+                {
+                    SetWorkingMessage(e.UserState.ToString());
+                },
+                PostWorkCallBack = e =>
+                {
+                    // This code is executed in the main thread
+                    MessageBox.Show(string.Format("Files saved to {0}", saveFilePath), "Files saved successfully");
+                },
+                AsyncArgument = null,
+                // Progress information panel size
+                MessageWidth = 340,
+                MessageHeight = 150
+            });
+        }
+        private EntityMetadata GetEntityMetaData(string tableName)
+        {
+            try
+            {
+                RetrieveEntityRequest req = new RetrieveEntityRequest()
+                {
+                    EntityFilters = EntityFilters.All,
+                    LogicalName = tableName,
+                    RetrieveAsIfPublished = true
+                };
+                return (Service.Execute(req) as RetrieveEntityResponse).EntityMetadata;
+            }
+            catch (Exception ex)
+            {
+                return null;
+            }
+        }
+        private void GetOrganizationLanguages()
+        {
+            var req = new RetrieveProvisionedLanguagesRequest();
+            var res = (RetrieveProvisionedLanguagesResponse)Service.Execute(req);
+
+            string language;
+            foreach (int code in res.RetrieveProvisionedLanguages)
+            {
+                language = languages[code] + " ("+code+")";
+                box_Language.Items.Add(language);
+            }
+
+            if (res.RetrieveProvisionedLanguages.Length > 0)
+            {
+                box_Language.SelectedIndex = 0;
+            }
+        }
+        private void GetPublisher(Guid publisherId)
+        {
+            QueryByAttribute query = new QueryByAttribute
+            {
+                EntityName = "publisher",
+                ColumnSet = new ColumnSet("customizationprefix", "customizationoptionvalueprefix")
+            };
+
+            query.Attributes.Add("publisherid");
+            query.Values.Add(publisherId);
+
+            try
+            {
+                EntityCollection retrievedPublishers = Service.RetrieveMultiple(query);
+
+                if (retrievedPublishers.Entities.Count > 0)
+                {
+                    prefix = retrievedPublishers.Entities[0]["customizationprefix"].ToString() + "_";
+                    optionValuePrefix = int.Parse(retrievedPublishers.Entities[0]["customizationoptionvalueprefix"].ToString());
+                }
+            }
+            catch (FaultException<OrganizationServiceFault> ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
+        private void GetSolutions()
+        {
+            lst_Solutions.Items.Clear();
+            solutions = new List<Entity>();
+
+            QueryExpression query = new QueryExpression
+            {
+                EntityName = "solution",
+                ColumnSet = new ColumnSet("uniquename", "publisherid", "ismanaged"),
+                Criteria = new FilterExpression()
+            };
+
+            LinkEntity publisherLink = new LinkEntity("solution", "publisher", "publisherid", "publisherid", JoinOperator.Inner)
+            {
+                LinkCriteria = new FilterExpression()
+            };
+
+            publisherLink.LinkCriteria.AddCondition(new ConditionExpression("customizationprefix", ConditionOperator.NotEqual, "new"));
+            publisherLink.LinkCriteria.AddCondition(new ConditionExpression("customizationprefix", ConditionOperator.NotEqual, "cr7d6"));
+            publisherLink.LinkCriteria.AddCondition(new ConditionExpression("customizationprefix", ConditionOperator.NotEqual, "msdyn"));
+            publisherLink.LinkCriteria.AddCondition(new ConditionExpression("customizationprefix", ConditionOperator.NotEqual, "msdynce"));
+            publisherLink.LinkCriteria.AddCondition(new ConditionExpression("customizationprefix", ConditionOperator.NotEqual, string.Empty));
+            query.LinkEntities.Add(publisherLink);
+
+            try
+            {
+                foreach (Entity solution in Service.RetrieveMultiple(query).Entities)
+                {
+                    solutions.Add(solution);
+                    lst_Solutions.Items.Add(solution["uniquename"].ToString());
+                }
+                lst_Solutions.Enabled = true;
+            }
+            catch (FaultException<OrganizationServiceFault> ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void GetSolutionEntities(string SolutionUniqueName)
         {
@@ -726,7 +957,7 @@ namespace MigrationAssistant
                 solutionSelections.Add(sel);
             }
 
-            btn_Connect.Enabled = false;
+            lst_Solutions.Enabled = false;
             btn_LoadSolutionEntities.Enabled = false;
             ExecuteMethod(DisableInputs);
 
@@ -756,6 +987,8 @@ namespace MigrationAssistant
                     object fieldObj;
 
                     destinationTabControl.TabPages.Clear();
+                    box_Table.Items.Clear();
+                    box_Target.Items.Clear();
 
                     int tabIdx = 0;
                     foreach (KeyValuePair<string, IEnumerable<EntityMetadata>> kv in entities)
@@ -783,14 +1016,17 @@ namespace MigrationAssistant
 
                             foreach (AttributeMetadata field in entity.Attributes)
                             {
-                                field.AttributeTypeName.Value = field.AttributeTypeName.Value.Replace("Type", "");
-                                fieldObj = field.LogicalName + " (" + field.AttributeTypeName.Value.ToString() + ")";
+                                field.AttributeTypeName.Value = field.AttributeTypeName.Value.Replace("Type", string.Empty);
+                                fieldObj = field.LogicalName + " (" + field.AttributeTypeName.Value + ")";
                                 box.Items.Add(fieldObj);
                             }
 
                             tabPage.Controls.Add(box);
                             box_Table.Items.Add(entity.LogicalName);
+                            box_Target.Items.Add(entity.LogicalName);
+
                             box_Table.Enabled = true;
+                            btn_LoadSolutionEntities.Enabled = true;
 
                             if (tabIdx == 0)
                             {
@@ -799,9 +1035,6 @@ namespace MigrationAssistant
                             }
                         }
                     }
-
-                    btn_Connect.Enabled = true;
-                    btn_LoadSolutionEntities.Enabled = true;
                     ExecuteMethod(EnableInputs);
                 },
                 AsyncArgument = null,
@@ -818,21 +1051,247 @@ namespace MigrationAssistant
 
             sourceTab.Items.Remove(item);
             sourceTab.Items.Insert(sourceItemIdx, item + " -> " + destinationField.TABLE_NAME + "." + destinationField.COLUMN_NAME + " (" + destinationField.DATA_TYPE + ")");
+
+            sourceTab.BackColor = System.Drawing.Color.Green;
         }
         private void MigrationAssistantControl_Load(object sender, EventArgs e)
         {
             EntityFactory = new Factory(Service);
             mappings = new List<Field>();
             schemaFormat = "PascalCase";
+            languages = new Dictionary<int, string>{
+                {1078,"Afrikaans – South Africa"},
+                {1052,"Albanian – Albania"},
+                {1118,"Amharic – Ethiopia"},
+                {5121,"Arabic – Algeria"},
+                {15361,"Arabic – Bahrain"},
+                {3073,"Arabic – Egypt"},
+                {2049,"Arabic – Iraq"},
+                {11265,"Arabic – Jordan"},
+                {13313,"Arabic – Kuwait"},
+                {12289,"Arabic – Lebanon"},
+                {4097,"Arabic – Libya"},
+                {6145,"Arabic – Morocco"},
+                {8193,"Arabic – Oman"},
+                {16385,"Arabic – Qatar"},
+                {1025,"Arabic – Saudi Arabia"},
+                {10241,"Arabic – Syria"},
+                {7169,"Arabic – Tunisia"},
+                {14337,"Arabic – U.A.E."},
+                {9217,"Arabic – Yemen"},
+                {1067,"Armenian – Armenia"},
+                {1101,"Assamese"},
+                {2092,"Azeri (Cyrillic)"},
+                {1068,"Azeri (Latin)"},
+                {1069,"Basque"},
+                {1059,"Belarusian"},
+                {2117,"Bengali (Bangladesh)"},
+                {1093,"Bengali (India)"},
+                {5146,"Bosnian (Bosnia/Herzegovina)"},
+                {1026,"Bulgarian"},
+                {1109,"Burmese"},
+                {1027,"Catalan"},
+                {1116,"Cherokee – United States"},
+                {3076,"Chinese – Hong Kong SAR"},
+                {5124,"Chinese – Macao SAR"},
+                {2052,"Chinese – People’s Republic of China"},
+                {4100,"Chinese – Singapore"},
+                {1028,"Chinese – Taiwan"},
+                {1050,"Croatian"},
+                {4122,"Croatian (Bosnia/Herzegovina)"},
+                {1029,"Czech"},
+                {1030,"Danish"},
+                {1125,"Divehi"},
+                {2067,"Dutch – Belgium"},
+                {1043,"Dutch – Netherlands"},
+                {1126,"Edo"},
+                {3081,"English – Australia"},
+                {10249,"English – Belize"},
+                {4105,"English – Canada"},
+                {9225,"English – Caribbean"},
+                {15369,"English – Hong Kong SAR"},
+                {16393,"English – India"},
+                {14345,"English – Indonesia"},
+                {6153,"English – Ireland"},
+                {8201,"English – Jamaica"},
+                {17417,"English – Malaysia"},
+                {5129,"English – New Zealand"},
+                {13321,"English – Philippines"},
+                {18441,"English – Singapore"},
+                {7177,"English – South Africa"},
+                {11273,"English – Trinidad"},
+                {2057,"English – United Kingdom"},
+                {1033,"English – United States"},
+                {12297,"English – Zimbabwe"},
+                {1061,"Estonian"},
+                {1071,"F.Y.R.O. Macedonian"},
+                {1080,"Faroese"},
+                {1124,"Filipino"},
+                {1035,"Finnish"},
+                {2060,"French – Belgium"},
+                {11276,"French – Cameroon"},
+                {3084,"French – Canada"},
+                {12300,"French – Cote d’Ivoire"},
+                {9228,"French – Democratic Rep. of Congo"},
+                {1036,"French – France"},
+                {15372,"French – Haiti"},
+                {5132,"French – Luxembourg"},
+                {13324,"French – Mali"},
+                {6156,"French – Monaco"},
+                {14348,"French – Morocco"},
+                {58380,"French – North Africa"},
+                {8204,"French – Reunion"},
+                {10252,"French – Senegal"},
+                {4108,"French – Switzerland"},
+                {7180,"French – West Indies"},
+                {1122,"Frisian – Netherlands"},
+                {1127,"Fulfulde – Nigeria"},
+                {2108,"Gaelic (Ireland)"},
+                {1084,"Gaelic (Scotland)"},
+                {1110,"Galician"},
+                {1079,"Georgian"},
+                {3079,"German – Austria"},
+                {1031,"German – Germany"},
+                {5127,"German – Liechtenstein"},
+                {4103,"German – Luxembourg"},
+                {2055,"German – Switzerland"},
+                {1032,"Greek"},
+                {1140,"Guarani – Paraguay"},
+                {1095,"Gujarati"},
+                {1128,"Hausa – Nigeria"},
+                {1141,"Hawaiian – United States"},
+                {1037,"Hebrew"},
+                {1081,"Hindi"},
+                {1038,"Hungarian"},
+                {1129,"Ibibio – Nigeria"},
+                {1039,"Icelandic"},
+                {1136,"Igbo – Nigeria"},
+                {1057,"Indonesian"},
+                {1117,"Inuktitut"},
+                {1040,"Italian – Italy"},
+                {2064,"Italian – Switzerland"},
+                {1041,"Japanese"},
+                {1099,"Kannada"},
+                {1137,"Kanuri – Nigeria"},
+                {1120,"Kashmiri (Arabic)"},
+                {2144,"Kashmiri (Devanagari)"},
+                {1087,"Kazakh"},
+                {1107,"Khmer"},
+                {1111,"Konkani"},
+                {1042,"Korean"},
+                {1088,"Kyrgyz (Cyrillic)"},
+                {1108,"Lao"},
+                {1142,"Latin"},
+                {1062,"Latvian"},
+                {1063,"Lithuanian"},
+                {2110,"Malay – Brunei Darussalam"},
+                {1086,"Malay – Malaysia"},
+                {1100,"Malayalam"},
+                {1082,"Maltese"},
+                {1112,"Manipuri"},
+                {1153,"Maori – New Zealand"},
+                {1102,"Marathi"},
+                {1104,"Mongolian (Cyrillic)"},
+                {2128,"Mongolian (Mongolian)"},
+                {1121,"Nepali"},
+                {2145,"Nepali – India"},
+                {1044,"Norwegian (Bokmål)"},
+                {2068,"Norwegian (Nynorsk)"},
+                {1096,"Oriya"},
+                {1138,"Oromo"},
+                {1145,"Papiamentu"},
+                {1123,"Pashto"},
+                {1065,"Persian"},
+                {1045,"Polish"},
+                {1046,"Portuguese – Brazil"},
+                {2070,"Portuguese – Portugal"},
+                {1094,"Punjabi"},
+                {2118,"Punjabi (Pakistan)"},
+                {1131,"Quecha – Bolivia"},
+                {2155,"Quecha – Ecuador"},
+                {3179,"Quecha – Peru"},
+                {1047,"Rhaeto-Romanic"},
+                {1048,"Romanian"},
+                {2072,"Romanian – Moldava"},
+                {1049,"Russian"},
+                {2073,"Russian – Moldava"},
+                {1083,"Sami"},
+                {1103,"Sanskrit"},
+                {1132,"Sepedi"},
+                {3098,"Serbian (Cyrillic)"},
+                {2074,"Serbian (Latin)"},
+                {1113,"Sindhi – India"},
+                {2137,"Sindhi – Pakistan"},
+                {1115,"Sinhalese – Sri Lanka"},
+                {1051,"Slovak"},
+                {1060,"Slovenian"},
+                {1143,"Somali"},
+                {1070,"Sorbian"},
+                {11274,"Spanish – Argentina"},
+                {16394,"Spanish – Bolivia"},
+                {13322,"Spanish – Chile"},
+                {9226,"Spanish – Colombia"},
+                {5130,"Spanish – Costa Rica"},
+                {7178,"Spanish – Dominican Republic"},
+                {12298,"Spanish – Ecuador"},
+                {17418,"Spanish – El Salvador"},
+                {4106,"Spanish – Guatemala"},
+                {18442,"Spanish – Honduras"},
+                {58378,"Spanish – Latin America"},
+                {2058,"Spanish – Mexico"},
+                {19466,"Spanish – Nicaragua"},
+                {6154,"Spanish – Panama"},
+                {15370,"Spanish – Paraguay"},
+                {10250,"Spanish – Peru"},
+                {20490,"Spanish – Puerto Rico"},
+                {3082,"Spanish – Spain (Modern Sort)"},
+                {1034,"Spanish – Spain (Traditional Sort)"},
+                {21514,"Spanish – United States"},
+                {14346,"Spanish – Uruguay"},
+                {8202,"Spanish – Venezuela"},
+                {1072,"Sutu"},
+                {1089,"Swahili"},
+                {1053,"Swedish"},
+                {2077,"Swedish – Finland"},
+                {1114,"Syriac"},
+                {1064,"Tajik"},
+                {1119,"Tamazight (Arabic)"},
+                {2143,"Tamazight (Latin)"},
+                {1097,"Tamil"},
+                {1092,"Tatar"},
+                {1098,"Telugu"},
+                {1054,"Thai"},
+                {2129,"Tibetan – Bhutan"},
+                {1105,"Tibetan – People’s Republic of China"},
+                {2163,"Tigrigna – Eritrea"},
+                {1139,"Tigrigna – Ethiopia"},
+                {1073,"Tsonga"},
+                {1074,"Tswana"},
+                {1055,"Turkish"},
+                {1090,"Turkmen"},
+                {1152,"Uighur – China"},
+                {1058,"Ukrainian"},
+                {2080,"Urdu – India"},
+                {1056,"Urdu – Pakistan"},
+                {2115,"Uzbek (Cyrillic)"},
+                {1091,"Uzbek (Latin)"},
+                {1075,"Venda"},
+                {1066,"Vietnamese"},
+                {1106,"Welsh"},
+                {1076,"Xhosa"},
+                {1144,"Yi"},
+                {1085,"Yiddish"},
+                {1130,"Yoruba"},
+                {1077,"Zulu"}
+            };
+            ExecuteMethod(GetOrganizationLanguages);
 
-            ExecuteMethod(RetrieveSolutions);
+            ExecuteMethod(GetSolutions);
         }
         private void PublishCustomizations()
         {
             btn_PublishEntity.Enabled = false;
             btn_PublishField.Enabled = false;
-            btn_Connect.Enabled = false;
-            btn_LoadSolutionEntities.Enabled = false;
             ExecuteMethod(DisableInputs);
 
             WorkAsync(new WorkAsyncInfo
@@ -857,8 +1316,6 @@ namespace MigrationAssistant
                 PostWorkCallBack = e =>
                 {
                     // This code is executed in the main thread
-                    btn_Connect.Enabled = true;
-                    btn_LoadSolutionEntities.Enabled = true;
                     ExecuteMethod(EnableInputs);
                 },
                 AsyncArgument = null,
@@ -870,7 +1327,6 @@ namespace MigrationAssistant
         private void ReadDatabase()
         {
             btn_Connect.Enabled = false;
-            btn_LoadSolutionEntities.Enabled = false;
             ExecuteMethod(DisableInputs);
 
             WorkAsync(new WorkAsyncInfo
@@ -933,9 +1389,6 @@ namespace MigrationAssistant
                             tabIdx++;
                         }
                     }
-
-                    btn_Connect.Enabled = true;
-                    btn_LoadSolutionEntities.Enabled = true;
                     ExecuteMethod(EnableInputs);
                 },
                 AsyncArgument = null,
@@ -948,79 +1401,6 @@ namespace MigrationAssistant
         {
             return Regex.Replace(Source, "[!\"#$%&'()*+,-./:;<=>?@\\[\\]^_`{|}~ ]", string.Empty);
         }
-        private EntityMetadata RetrieveEntityMetaData(string tableName)
-        {
-            try
-            {
-                RetrieveEntityRequest req = new RetrieveEntityRequest()
-                {
-                    EntityFilters = EntityFilters.Entity,
-                    LogicalName = prefix + tableName,
-                    RetrieveAsIfPublished = true
-                };
-                return (Service.Execute(req) as RetrieveEntityResponse).EntityMetadata;
-            }
-            catch (Exception ex)
-            {
-                return null;
-            }
-        }
-        private void RetrievePublisher(Guid publisherId)
-        {
-            QueryByAttribute query = new QueryByAttribute
-            {
-                EntityName = "publisher",
-                ColumnSet = new ColumnSet("customizationprefix")
-            };
-
-            query.Attributes.Add("publisherid");
-            query.Values.Add(publisherId);
-
-            try
-            {
-                EntityCollection retrievedPublishers = Service.RetrieveMultiple(query);
-
-                if (retrievedPublishers.Entities.Count > 0)
-                {
-                    prefix = retrievedPublishers.Entities[0]["customizationprefix"].ToString() + "_";
-                }
-            }
-            catch (FaultException<OrganizationServiceFault> ex)
-            {
-                throw new Exception(ex.Message);
-            }
-        }
-        private void RetrieveSolutions()
-        {
-            lst_Solutions.Items.Clear();
-            solutions = new Dictionary<string, Guid>();
-
-            QueryExpression query = new QueryExpression
-            {
-                EntityName = "solution",
-                ColumnSet = new ColumnSet("uniquename", "publisherid"),
-                Criteria = new FilterExpression()
-            };
-
-            query.Criteria.AddCondition("ismanaged", ConditionOperator.Equal, false);
-
-            try
-            {
-                foreach (Entity solution in Service.RetrieveMultiple(query).Entities)
-                {
-                    if (solution["uniquename"].ToString() != "System" && solution["uniquename"].ToString() != "Active" && solution["uniquename"].ToString() != "Basic" && solution["uniquename"].ToString() != "ActivityFeeds" && !string.IsNullOrEmpty(solution["publisherid"].ToString()))
-                    {
-                        solutions.Add(solution["uniquename"].ToString(), solution.GetAttributeValue<EntityReference>("publisherid").Id);
-                        lst_Solutions.Items.Add(solution["uniquename"].ToString());
-                    }
-                }
-                lst_Solutions.Enabled = true;
-            }
-            catch (FaultException<OrganizationServiceFault> ex)
-            {
-                throw new Exception(ex.Message);
-            }
-        }
         private void SaveCSV()
         {
             WorkAsync(new WorkAsyncInfo
@@ -1029,7 +1409,7 @@ namespace MigrationAssistant
                 Work = (w, e) =>
                 {
                     // This code is executed in another thread
-                    EntityFactory.ExportMappingToCSV(tableOrSchema, saveFilePath);
+                    EntityFactory.ExportMappingToCSV(saveFilePath);
 
                     w.ReportProgress(-1, "Mappings saved successfully.");
                     e.Result = 1;
@@ -1051,22 +1431,23 @@ namespace MigrationAssistant
         }
         private void SelectSolution()
         {
-            if (box_Solution.Text != string.Empty)
+            if (box_Solution.SelectedItem != null)
             {
-                string selectedSolution = box_Solution.Text;
-                KeyValuePair<string, Guid> solutionKVP = solutions.FirstOrDefault(x => x.Key == selectedSolution);
+                Entity selectedSolution = solutions.Find(s => s.GetAttributeValue<string>("uniquename") == box_Solution.Text);
 
-                if (solutionKVP.Key != null)
+                if (selectedSolution != null)
                 {
                     box_Table.Items.Clear();
-                    solution = solutionKVP.Key;
-                    RetrievePublisher(solutionKVP.Value);
+                    box_Target.Items.Clear();
+                    solution = selectedSolution.GetAttributeValue<string>("uniquename");
+                    GetPublisher(selectedSolution.GetAttributeValue<EntityReference>("publisherid").Id);
 
-                    if (entities != null && entities.Keys.Contains(selectedSolution))
+                    if (entities != null && entities.Keys.Contains(selectedSolution.GetAttributeValue<string>("uniquename")))
                     {
-                        foreach (EntityMetadata entity in entities[selectedSolution])
+                        foreach (EntityMetadata entity in entities[selectedSolution.GetAttributeValue<string>("uniquename")])
                         {
                             box_Table.Items.Add(entity.LogicalName);
+                            box_Target.Items.Add(entity.LogicalName);
                         }
                     }
                 }
@@ -1079,10 +1460,195 @@ namespace MigrationAssistant
 
             return source;
         }
+        private void ToggleFieldInputs()
+        {
+            num_FieldLength.Enabled = false;
+            num_MinValue.Enabled = false;
+            num_MaxValue.Enabled = false;
+            box_Target.Enabled = false;
+            txt_RelationshipName.Enabled = false;
+
+            lbl_FieldLength.Visible = false;
+            num_FieldLength.Visible = false;
+
+            lbl_MinValue.Visible = false;
+            num_MinValue.Visible = false;
+            lbl_MaxValue.Visible = false;
+            num_MaxValue.Visible = false;
+
+            lbl_Target.Visible = false;
+            box_Target.Visible = false;
+            lbl_RelationshipName.Visible = false;
+            txt_RelationshipName.Visible = false;
+
+            switch (box_DataType.Text)
+            {
+                case "Single Line of Text":
+                    num_FieldLength.Enabled = true;
+                    num_MinValue.Enabled = false;
+                    num_MaxValue.Enabled = false;
+
+                    lbl_FieldLength.Visible = true;
+                    num_FieldLength.Visible = true;
+
+                    num_FieldLength.Minimum = 0;
+                    num_FieldLength.Maximum = 4000;
+                    num_FieldLength.Value = 100;
+                    break;
+                case "Multiple Lines of Text":
+                    num_FieldLength.Enabled = true;
+
+                    lbl_FieldLength.Visible = true;
+                    num_FieldLength.Visible = true;
+
+                    num_FieldLength.Minimum = 0;
+                    num_FieldLength.Maximum = 1048576;
+                    num_FieldLength.Value = 2000;
+                    break;
+                case "Date Only":
+                    num_FieldLength.Minimum = 0;
+                    num_FieldLength.Maximum = 0;
+                    num_FieldLength.Value = 0;
+                    break;
+                case "Date and Time":
+                    num_FieldLength.Minimum = 1;
+                    num_FieldLength.Maximum = 1;
+                    num_FieldLength.Value = 1;
+                    break;
+                case "Whole Number":
+                    num_MinValue.Enabled = true;
+                    num_MaxValue.Enabled = true;
+
+                    lbl_FieldLength.Visible = true;
+                    num_FieldLength.Visible = true;
+
+                    lbl_MinValue.Visible = true;
+                    num_MinValue.Visible = true;
+                    lbl_MaxValue.Visible = true;
+                    num_MaxValue.Visible = true;
+
+                    num_FieldLength.Minimum = 0;
+                    num_FieldLength.Maximum = 0;
+                    num_FieldLength.Value = 0;
+
+                    num_MinValue.Minimum = -2147483648;
+                    num_MinValue.Maximum = 2147483647;
+                    num_MinValue.Value = -2147483648;
+
+                    num_MaxValue.Minimum = -2147483648;
+                    num_MaxValue.Maximum = 2147483647;
+                    num_MaxValue.Value = 2147483647;
+                    break;
+                case "Decimal Number":
+                    num_FieldLength.Enabled = true;
+                    num_MinValue.Enabled = true;
+                    num_MaxValue.Enabled = true;
+
+                    lbl_FieldLength.Visible = true;
+                    num_FieldLength.Visible = true;
+
+                    lbl_MinValue.Visible = true;
+                    num_MinValue.Visible = true;
+                    lbl_MaxValue.Visible = true;
+                    num_MaxValue.Visible = true;
+
+                    num_FieldLength.Minimum = 0;
+                    num_FieldLength.Maximum = 10;
+                    num_FieldLength.Value = 2;
+
+                    num_MinValue.Minimum = -100000000000;
+                    num_MinValue.Maximum = 100000000000;
+                    num_MinValue.Value = -100000000000;
+
+                    num_MaxValue.Minimum = -100000000000;
+                    num_MaxValue.Maximum = 100000000000;
+                    num_MaxValue.Value = 100000000000;
+                    break;
+                case "Floating Point Number":
+                    num_FieldLength.Enabled = true;
+                    num_MinValue.Enabled = true;
+                    num_MaxValue.Enabled = true;
+
+                    lbl_FieldLength.Visible = true;
+                    num_FieldLength.Visible = true;
+
+                    lbl_MinValue.Visible = true;
+                    num_MinValue.Visible = true;
+                    lbl_MaxValue.Visible = true;
+                    num_MaxValue.Visible = true;
+
+                    num_FieldLength.Minimum = 0;
+                    num_FieldLength.Maximum = 5;
+                    num_FieldLength.Value = 2;
+
+                    num_MinValue.Minimum = -100000000000;
+                    num_MinValue.Maximum = 100000000000;
+                    num_MinValue.Value = 0;
+
+                    num_MaxValue.Minimum = -100000000000;
+                    num_MaxValue.Maximum = 100000000000;
+                    num_MaxValue.Value = 100000000000;
+                    break;
+                case "Currency":
+                    num_FieldLength.Enabled = true;
+                    num_MinValue.Enabled = true;
+                    num_MaxValue.Enabled = true;
+
+                    lbl_FieldLength.Visible = true;
+                    num_FieldLength.Visible = true;
+
+                    lbl_MinValue.Visible = true;
+                    num_MinValue.Visible = true;
+                    lbl_MaxValue.Visible = true;
+                    num_MaxValue.Visible = true;
+
+                    num_FieldLength.Minimum = 0;
+                    num_FieldLength.Maximum = 4;
+                    num_FieldLength.Value = 2;
+
+                    num_MinValue.Minimum = -922337203685477;
+                    num_MinValue.Maximum = 922337203685477;
+                    num_MinValue.Value = -922337203685477;
+
+                    num_MaxValue.Minimum = -922337203685477;
+                    num_MaxValue.Maximum = 922337203685477;
+                    num_MaxValue.Value = 922337203685477;
+                    break;
+                case "Image":
+                case "File":
+                    num_FieldLength.Enabled = true;
+
+                    lbl_FieldLength.Visible = true;
+                    num_FieldLength.Visible = true;
+
+                    num_FieldLength.Minimum = 1;
+                    num_FieldLength.Maximum = 131072;
+                    num_FieldLength.Value = 32768;
+                    break;
+                case "Lookup":
+                    box_Target.Enabled = true;
+                    txt_RelationshipName.Enabled = true;
+
+                    lbl_Target.Visible = true;
+                    box_Target.Visible = true;
+                    lbl_RelationshipName.Visible = true;
+                    txt_RelationshipName.Visible = true;
+                    break;
+                default: break;
+            }
+
+            if (CanCreateField()) btn_CreateField.Enabled = true;
+
+            if (box_Table.SelectedItem != null && box_DataType.SelectedItem != null
+                && (box_Table.SelectedItem.ToString() == "account" || box_Table.SelectedItem.ToString() == "contact") && box_DataType.SelectedItem.ToString() == "Customer")
+            {
+                MessageBox.Show("Polymorphic lookups cannot be self-referential.");
+            }
+        }
         public override void UpdateConnection(IOrganizationService newService, ConnectionDetail detail, string actionName, object parameter)
         {
             base.UpdateConnection(newService, detail, actionName, parameter);
-            ExecuteMethod(RetrieveSolutions);
+            ExecuteMethod(GetSolutions);
         }
     }
 }
