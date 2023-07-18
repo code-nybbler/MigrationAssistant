@@ -45,13 +45,17 @@ namespace MigrationAssistant
             if (Mode == 0)
             {
                 string[] tableArr = Tables.Find(t => t[0].ToLower()+"."+t[1].ToLower() == SelectedTableSchema);
-                RecCount = IgnoreEmpty ? GetRecordCount(tableArr) : 0;
 
-                if (RecCount > 0 || !IgnoreEmpty)
+                if (tableArr != null)
                 {
-                    table = RetrieveTableColumns(tableArr);
-                    table.RECORD_COUNT = RecCount;
-                    TableList.Add(table);
+                    RecCount = IgnoreEmpty ? GetRecordCount(tableArr) : 0;
+
+                    if (RecCount > 0 || !IgnoreEmpty)
+                    {
+                        table = RetrieveTableColumns(tableArr);
+                        table.RECORD_COUNT = RecCount;
+                        TableList.Add(table);
+                    }
                 }
             }
             else
@@ -77,7 +81,7 @@ namespace MigrationAssistant
         }
         protected Table RetrieveTableColumns(string[] tbl)
         {
-            Table table = new Table(tbl[0], tbl[1]);
+            Table table = new Table(tbl[0]+"."+tbl[1]);
             List<Field> fields = new List<Field>();
             List<Field> fieldsFiltered = new List<Field>();
             List<Key> keys = new List<Key>();
@@ -93,7 +97,7 @@ namespace MigrationAssistant
                                                    ,NUMERIC_PRECISION
                                                    ,DATETIME_PRECISION
                                             FROM INFORMATION_SCHEMA.COLUMNS
-                                            WHERE TABLE_NAME = '{1}' AND TABLE_SCHEMA = '{2}'", Database, table.NAME, table.SCHEMA);
+                                            WHERE TABLE_NAME = '{1}' AND TABLE_SCHEMA = '{2}'", Database, tbl[1], tbl[0]);
 
                 using (SqlCommand Command = new SqlCommand(Query, this.Connection))
                 {
@@ -130,7 +134,7 @@ namespace MigrationAssistant
                                     SELECT COLUMN_NAME
                                     FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
                                     WHERE OBJECTPROPERTY(OBJECT_ID(CONSTRAINT_SCHEMA + '.' + QUOTENAME(CONSTRAINT_NAME)), 'IsPrimaryKey') = 1
-                                    AND TABLE_NAME = '{1}' AND TABLE_SCHEMA = '{2}'", this.Database, table.NAME, table.SCHEMA);
+                                    AND TABLE_NAME = '{1}' AND TABLE_SCHEMA = '{2}'", this.Database, tbl[1], tbl[0]);
 
                 using (SqlCommand Command = new SqlCommand(Query, this.Connection))
                 {
@@ -168,7 +172,7 @@ namespace MigrationAssistant
                                         AND fkc.referenced_column_id = c.column_id
                                     INNER JOIN sys.SCHEMAs AS s ON s.SCHEMA_id = t.SCHEMA_id
                                     INNER JOIN sys.SCHEMAs AS rs ON rs.SCHEMA_id = rt.SCHEMA_id
-                                    WHERE t.NAME = '{1}' AND s.NAME = '{2}'", this.Database, table.NAME, table.SCHEMA);
+                                    WHERE t.NAME = '{1}' AND s.NAME = '{2}'", this.Database, tbl[1], tbl[0]);
 
                 using (SqlCommand Command = new SqlCommand(Query, this.Connection))
                 {
@@ -178,7 +182,7 @@ namespace MigrationAssistant
                         {
                             if (fieldsFiltered.Find(x => x.COLUMN_NAME == Reader["COLUMN_NAME"].ToString()) != null) // is used column
                             {
-                                keys.Add(new Key(Reader["COLUMN_NAME"].ToString(), 2, Reader["FK_TABLE"].ToString(), Reader["FK_TABLE_SCHEMA"].ToString(), "", Reader["REFERENCED_SCHEMA"].ToString(), Reader["REFERENCED_TABLE"].ToString(), Reader["REFERENCED_COLUMN"].ToString()));
+                                keys.Add(new Key(Reader["COLUMN_NAME"].ToString(), 2, Reader["FK_TABLE_SCHEMA"].ToString()+"."+Reader["FK_TABLE"].ToString(), Reader["REFERENCED_SCHEMA"].ToString()+"."+Reader["REFERENCED_TABLE"].ToString(), Reader["REFERENCED_COLUMN"].ToString()));
                             }
                         }
                     }
@@ -232,7 +236,7 @@ namespace MigrationAssistant
 
             string Query = String.Format(@"USE [{0}]
                                     SELECT COUNT(DISTINCT [{1}]) AS CNT
-                                    FROM [{2}].[{3}]", Database, field.COLUMN_NAME, table.SCHEMA, table.NAME);
+                                    FROM {2}", Database, field.COLUMN_NAME, table.NAME);
 
             try
             {
@@ -265,16 +269,16 @@ namespace MigrationAssistant
             {
                 Query = String.Format(@"USE [{0}]
                                         SELECT DISTINCT [{1}].[{2}] AS CODE, [{3}].[{4}] AS DESCRIPTION
-                                        FROM [{5}].[{6}]
-                                        INNER JOIN [{7}].[{8}] ON [{9}].[{10}] = [{11}].[{12}]
-                                        ORDER BY [{13}].[{14}]", this.Database, tbl.NAME, col, key.REFERENCED_TABLE, descCol, tbl.SCHEMA, tbl.NAME, key.REFERENCED_SCHEMA, key.REFERENCED_TABLE, key.REFERENCED_TABLE, key.REFERENCED_COLUMN, tbl.NAME, col, tbl.NAME, col);
+                                        FROM [5}
+                                        INNER JOIN [{6}] ON [{7}].[{8}] = [{9}].[{10}]
+                                        ORDER BY [{11}].[{12}]", this.Database, tbl.NAME, col, key.REFERENCED_TABLE, descCol, tbl.NAME, key.REFERENCED_TABLE, key.REFERENCED_TABLE, key.REFERENCED_COLUMN, tbl.NAME, col, tbl.NAME, col);
             }
             else
             {
                 Query = String.Format(@"USE [{0}]
                                         SELECT DISTINCT [{1}] AS DESCRIPTION, '' AS CODE
-                                        FROM [{2}].[{3}]
-                                        ORDER BY [{4}]", this.Database, col, tbl.SCHEMA, tbl.NAME, col);
+                                        FROM {2}
+                                        ORDER BY [{3}]", this.Database, col, tbl.NAME, col);
             }
 
             Dictionary<int, string> Values = new Dictionary<int, string>();

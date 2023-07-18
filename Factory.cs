@@ -9,6 +9,7 @@ using System.IO;
 using static System.Windows.Forms.CheckedListBox;
 using Microsoft.Crm.Sdk.Messages;
 using System.Linq;
+using System.Data.SqlTypes;
 
 namespace MigrationAssistant
 {
@@ -46,7 +47,7 @@ namespace MigrationAssistant
 
                         if (SourceTable != string.Empty && SourceFieldName != string.Empty && DestinationTable != string.Empty && DestinationFieldName != string.Empty && DestinationDataType != string.Empty)
                         {
-                            if (TableList.Find(t => t.NAME == SourceTable) != null)
+                            if (TableList.Exists(t => t.NAME == SourceTable))
                             {
                                 SourceField = TableList.Find(t => t.NAME == SourceTable).FIELDS.Find(f => f.COLUMN_NAME == SourceFieldName);
                                 DestinationField = new Field(DestinationFieldName, DestinationDataType, DestinationTable);
@@ -65,6 +66,7 @@ namespace MigrationAssistant
                         }
                     }
                 }
+                Reader.Close();
             }
             else
             {
@@ -74,52 +76,102 @@ namespace MigrationAssistant
         }
         public void ExportSQLScripts(Dictionary<string, List<Field>> Mappings, string SaveFilePath)
         {
-            List<string> columns;
-            string file, line, mainTable = string.Empty;
+            List<string> columns, joins;
+            string file, line;
+            Table mainTable = null, relatedTable;
+            Field field;
 
-            int maxOccur = -1, occur;
+            int maxCount;
             foreach (KeyValuePair<string, List<Field>> kv in Mappings)
             {
                 // kv.Key = mapped entity name
-                // kv.Value = mapped source fields
+                // kv.Value = mapped source fields)
                 file = string.Format("{0}/" + kv.Key + ".sql", SaveFilePath);
                 columns = new List<string>();
+                joins = new List<string>();
+                maxCount = -1;
 
                 // get occurence count for each source table in mapped fields to select main table to query from
-                foreach (string tableName in kv.Value.Select(x => x.TABLE_NAME).Distinct())
+                var TableCounts = kv.Value.GroupBy(a => a.TABLE_NAME).Select(x => new { key = x.Key, val = x.Count() });
+
+                foreach (var item in TableCounts)
                 {
-                    occur = kv.Value.Distinct().Count();
-                    if (occur > maxOccur)
+                    if (item.val > maxCount)
                     {
-                        maxOccur = occur;
-                        mainTable = tableName;
+                        maxCount = item.val;
+                        mainTable = TableList.Find(t => t.NAME == item.key);
                     }
                 }
 
-                using (var stream = File.CreateText(file))
+                if (mainTable != null)
                 {
-                    line = "SELECT";
-                    stream.WriteLine(line);
-
-                    foreach (Field field in kv.Value)
+                    using (var stream = File.CreateText(file))
                     {
-                        line = string.Format("{0}.{1} AS {2}", field.TABLE_NAME, field.COLUMN_NAME, field.MAPPED_FIELD.COLUMN_NAME);
-                        columns.Add(line);
-                    }
-
-                    stream.WriteLine(columns.Aggregate((a, b) => a + ",\n" + b));
-
-                    line = string.Format("FROM {0}.{1}", Database, mainTable);
-                    stream.WriteLine(line);
-
-                    // create joins to related tables
-                    foreach (string tableName in kv.Value.Select(x => x.TABLE_NAME).Where(t => t != mainTable).Distinct())
-                    {
-                        line = string.Format("LEFT JOIN {0}.{1} ON {2}.{3} = {4}.{5}", Database, tableName, tableName, "PKEY", mainTable, "FKEY");
+                        line = "SELECT";
                         stream.WriteLine(line);
-                    }
 
-                    stream.Close();
+                        foreach (Key key in mainTable.KEYS.Where(k => k.KEY_TYPE == 2 && !mainTable.FIELDS.Exists(ff => ff.TABLE_NAME == k.REFERENCED_TABLE)))
+                        {
+                            field = kv.Value.Find(f => f.TABLE_NAME == key.REFERENCED_TABLE && f.KEY == null);
+                            if (field != null)
+                            {
+                                field.KEY = key;
+                                joins.Add(string.Format("LEFT JOIN {0} {1} ON {2}.{3} = {4}.{5}", key.REFERENCED_TABLE, key.REFERENCED_TABLE.Split('.')[1] + "_" + key.COLUMN_NAME, key.REFERENCED_TABLE.Split('.')[1] + "_" + key.COLUMN_NAME, key.REFERENCED_COLUMN, mainTable.NAME.Split('.')[1], key.COLUMN_NAME));
+                            }
+                        }
+
+                        foreach (Field f in kv.Value) // loop through every mapped column
+                        {
+                            line = string.Empty;
+
+                            if (f.KEY != null) // key was found
+                            {
+                                line = string.Format("{0}.{1} AS {2}", f.KEY.REFERENCED_TABLE.Split('.')[1] + "_" + f.KEY.COLUMN_NAME, f.COLUMN_NAME, f.MAPPED_FIELD.COLUMN_NAME);
+                            }
+                            else if (f.TABLE_NAME != mainTable.NAME) // no key but not from main table
+                            {
+                                // find a way to link to mapped column's table (within two jumps)
+                                foreach (Key key in mainTable.KEYS)
+                                {
+                                    relatedTable = TableList.Find(t => t.NAME == key.REFERENCED_TABLE);
+                                    if (relatedTable != null)
+                                    {
+                                        foreach (Key k in relatedTable.KEYS)
+                                        {
+                                            Table table = TableList.Find(t => t.NAME == k.REFERENCED_TABLE);
+                                            if (table != null)
+                                            {
+                                                Field relatedTableField = table.FIELDS.Find(ff => ff.COLUMN_NAME == f.COLUMN_NAME);
+                                                if (relatedTableField != null)
+                                                {
+                                                    joins.Add(string.Format("LEFT JOIN {0} {1} ON {2}.{3} = {4}.{5}", key.REFERENCED_TABLE, key.REFERENCED_TABLE.Split('.')[1] + "_" + key.COLUMN_NAME, key.REFERENCED_TABLE.Split('.')[1] + "_" + key.COLUMN_NAME, key.REFERENCED_COLUMN, mainTable.NAME.Split('.')[1], key.COLUMN_NAME));
+                                                    joins.Add(string.Format("LEFT JOIN {0} {1} ON {2}.{3} = {4}.{5}", k.REFERENCED_TABLE, k.REFERENCED_TABLE.Split('.')[1] + "_" + relatedTableField.COLUMN_NAME, k.REFERENCED_TABLE.Split('.')[1] + "_" + relatedTableField.COLUMN_NAME, k.REFERENCED_COLUMN, key.REFERENCED_TABLE.Split('.')[1] + "_" + key.COLUMN_NAME, k.COLUMN_NAME));
+                                                    line = string.Format("{0}.{1} AS {2}", k.REFERENCED_TABLE.Split('.')[1] + "_" + relatedTableField.COLUMN_NAME, relatedTableField.COLUMN_NAME, f.MAPPED_FIELD.COLUMN_NAME);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (line != string.Empty) break;
+                                }
+                            }
+                            else // main table column
+                            {
+                                line = string.Format("{0}.{1} AS {2}", f.TABLE_NAME.Split('.')[1], f.COLUMN_NAME, f.MAPPED_FIELD.COLUMN_NAME);
+                            }
+                            columns.Add(line);
+                        }
+
+                        stream.WriteLine(columns.Aggregate((a, b) => a + ",\n" + b));
+
+                        line = string.Format("FROM {0}", mainTable.NAME);
+                        stream.WriteLine(line);
+
+                        // add joins
+                        foreach (string join in joins) stream.WriteLine(join);
+
+                        stream.Close();
+                    }
                 }
             }
         }
@@ -178,8 +230,8 @@ namespace MigrationAssistant
                         {
                             Worksheet.Cell("A" + Row).Value = table.FIELDS[Idx].COLUMN_NAME;
                             Worksheet.Cell("B" + Row).Value = table.FIELDS[Idx].DATA_TYPE;
-                            Worksheet.Cell("C" + Row).Value = table.FIELDS[Idx].MAPPED_FIELD.COLUMN_NAME;
-                            Worksheet.Cell("D" + Row).Value = table.FIELDS[Idx].MAPPED_FIELD.DATA_TYPE;
+                            Worksheet.Cell("C" + Row).Value = table.FIELDS[Idx].MAPPED_FIELD != null ? table.FIELDS[Idx].MAPPED_FIELD.COLUMN_NAME : string.Empty;
+                            Worksheet.Cell("D" + Row).Value = table.FIELDS[Idx].MAPPED_FIELD != null ? table.FIELDS[Idx].MAPPED_FIELD.DATA_TYPE : string.Empty;
 
                             Row++;
                         }
@@ -199,33 +251,40 @@ namespace MigrationAssistant
         {
             this.LanguageCode = LanguageCode;
 
-            CreateEntityRequest createrequest = new CreateEntityRequest
+            try
             {
-                // Define the entity
-                Entity = new EntityMetadata
+                CreateEntityRequest createrequest = new CreateEntityRequest
                 {
-                    SchemaName = PublisherPrefix + TableName,
-                    DisplayName = new Label(TableDisplayName, LanguageCode),
-                    DisplayCollectionName = new Label(TablePluralName, LanguageCode),
-                    Description = new Label(TableDescription, LanguageCode),
-                    OwnershipType = OwnershipTypes.UserOwned
-                },
+                    // Define the entity
+                    Entity = new EntityMetadata
+                    {
+                        SchemaName = PublisherPrefix + TableName,
+                        DisplayName = new Label(TableDisplayName, LanguageCode),
+                        DisplayCollectionName = new Label(TablePluralName, LanguageCode),
+                        Description = new Label(TableDescription, LanguageCode),
+                        OwnershipType = OwnershipTypes.UserOwned
+                    },
 
-                // Define the primary attribute for the entity
-                PrimaryAttribute = new StringAttributeMetadata
-                {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    MaxLength = LengthOrPrecision,
-                    FormatName = StringFormatName.Text,
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    Description = new Label("The primary attribute for the " + TableDisplayName + " table.", LanguageCode)
-                },
+                    // Define the primary attribute for the entity
+                    PrimaryAttribute = new StringAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        MaxLength = LengthOrPrecision,
+                        FormatName = StringFormatName.Text,
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        Description = new Label("The primary attribute for the " + TableDisplayName + " table.", LanguageCode)
+                    },
 
-                SolutionUniqueName = SolutionName
-            };
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(createrequest);
+                OrgService.Execute(createrequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         public void CreateTableAttribute(string SolutionName, string PublisherPrefix, int OptionValuePrefix, string TableName, string FieldLabel, string FieldSchema, string DataType, int LengthOrPrecision, CheckedItemCollection OptionSetValues, int Required, EntityMetadata Table, EntityMetadata Target, string RelationshipName, int LanguageCode)
         {
@@ -260,148 +319,204 @@ namespace MigrationAssistant
         }
         private void CreateFileAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Length, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new FileAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    MaxSizeInKB = Length
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new FileAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        MaxSizeInKB = Length
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateImageAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Length, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new ImageAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    MaxSizeInKB = Length
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new ImageAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        MaxSizeInKB = Length
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateSingleLineAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Length, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new StringAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    FormatName = StringFormatName.Text,
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    MaxLength = Length
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new StringAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        FormatName = StringFormatName.Text,
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        MaxLength = Length
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateMemoAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Length, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new MemoAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    Format = StringFormat.TextArea,
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    MaxLength = Length
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new MemoAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        Format = StringFormat.TextArea,
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        MaxLength = Length
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateWholeNumberAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new IntegerAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
-                    MinValue = IntegerAttributeMetadata.MinSupportedValue
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new IntegerAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
+                        MinValue = IntegerAttributeMetadata.MinSupportedValue
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateDecimalAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Precision, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new DecimalAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
-                    MinValue = IntegerAttributeMetadata.MinSupportedValue,
-                    Precision = Precision
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new DecimalAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
+                        MinValue = IntegerAttributeMetadata.MinSupportedValue,
+                        Precision = Precision
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateDoubleAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Precision, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new DoubleAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
-                    MinValue = IntegerAttributeMetadata.MinSupportedValue,
-                    Precision = Precision
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new DoubleAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
+                        MinValue = IntegerAttributeMetadata.MinSupportedValue,
+                        Precision = Precision
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateCurrencyAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Precision, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new MoneyAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
-                    MinValue = IntegerAttributeMetadata.MinSupportedValue,
-                    Precision = Precision
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new MoneyAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        MaxValue = IntegerAttributeMetadata.MaxSupportedValue,
+                        MinValue = IntegerAttributeMetadata.MinSupportedValue,
+                        Precision = Precision
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateMultiSelectPicklistAttribute(string SolutionName, string PublisherPrefix, int OptionValuePrefix, string TableName, string FieldLabel, string FieldSchema, CheckedItemCollection OptionSetValues, int Required)
         {
@@ -418,20 +533,27 @@ namespace MigrationAssistant
                 OptionSetMeta.Options.Add(new OptionMetadata(label, OptionValue++));
             }
 
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new MultiSelectPicklistAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    OptionSet = OptionSetMeta
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new MultiSelectPicklistAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        OptionSet = OptionSetMeta
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreatePicklistAttribute(string SolutionName, string PublisherPrefix, int OptionValuePrefix, string TableName, string FieldLabel, string FieldSchema, CheckedItemCollection OptionSetValues, int Required)
         {
@@ -448,99 +570,127 @@ namespace MigrationAssistant
                 OptionSetMeta.Options.Add(new OptionMetadata(label, OptionValue++));
             }
 
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new PicklistAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    OptionSet = OptionSetMeta
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new PicklistAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        OptionSet = OptionSetMeta
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateDateTimeAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Precision, int Required)
         {
             DateTimeFormat Format = Precision > 0 ? DateTimeFormat.DateAndTime : DateTimeFormat.DateOnly;
-            
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+         
+            try
             {
-                EntityName = TableName,
-                Attribute = new DateTimeAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    Format = Format
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new DateTimeAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        Format = Format
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateTwoOptionAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, int Required)
         {
-            CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
+            try
             {
-                EntityName = TableName,
-                Attribute = new BooleanAttributeMetadata
+                CreateAttributeRequest CreateAttributeRequest = new CreateAttributeRequest
                 {
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
-                    OptionSet = new BooleanOptionSetMetadata(
-                                    new OptionMetadata(new Label("No", LanguageCode), 0),
-                                    new OptionMetadata(new Label("Yes", LanguageCode), 1)                                    
-                                )
-                },
-                SolutionUniqueName = SolutionName
-            };
+                    EntityName = TableName,
+                    Attribute = new BooleanAttributeMetadata
+                    {
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required),
+                        OptionSet = new BooleanOptionSetMetadata(
+                                        new OptionMetadata(new Label("No", LanguageCode), 0),
+                                        new OptionMetadata(new Label("Yes", LanguageCode), 1)                                    
+                                    )
+                    },
+                    SolutionUniqueName = SolutionName
+                };
 
-            OrgService.Execute(CreateAttributeRequest);
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateLookupAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, EntityMetadata Table, EntityMetadata Target, string RelationshipName, int Required)
         {
-            CreateOneToManyRequest CreateAttributeRequest = new CreateOneToManyRequest()
+            try
             {
-                Lookup = new LookupAttributeMetadata()
+                CreateOneToManyRequest CreateAttributeRequest = new CreateOneToManyRequest()
                 {
-                    DisplayName = new Label(FieldLabel, LanguageCode),
-                    LogicalName = PublisherPrefix + FieldSchema.ToLower(),
-                    SchemaName = PublisherPrefix + FieldSchema,
-                    RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required)
-
-                },
-                OneToManyRelationship = new OneToManyRelationshipMetadata()
-                {
-                    AssociatedMenuConfiguration = new AssociatedMenuConfiguration()
+                    Lookup = new LookupAttributeMetadata()
                     {
-                        Behavior = AssociatedMenuBehavior.UseCollectionName,
-                        Group = AssociatedMenuGroup.Details,
-                        Label = new Label(Table.DisplayCollectionName.UserLocalizedLabel.Label, LanguageCode),
-                        Order = 10000
-                    },
-                    CascadeConfiguration = new CascadeConfiguration()
-                    {
-                        Assign = CascadeType.NoCascade,
-                        Delete = CascadeType.RemoveLink,
-                        Merge = CascadeType.NoCascade,
-                        Reparent = CascadeType.NoCascade,
-                        Share = CascadeType.NoCascade,
-                        Unshare = CascadeType.NoCascade
-                    },
-                    ReferencedEntity = Target.LogicalName,
-                    ReferencedAttribute = Target.PrimaryIdAttribute,
-                    ReferencingEntity = TableName,
-                    SchemaName = PublisherPrefix + RelationshipName
-                },
-                SolutionUniqueName = SolutionName
-            };
+                        DisplayName = new Label(FieldLabel, LanguageCode),
+                        LogicalName = PublisherPrefix + FieldSchema.ToLower(),
+                        SchemaName = PublisherPrefix + FieldSchema,
+                        RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)Required)
 
-            OrgService.Execute(CreateAttributeRequest);
+                    },
+                    OneToManyRelationship = new OneToManyRelationshipMetadata()
+                    {
+                        AssociatedMenuConfiguration = new AssociatedMenuConfiguration()
+                        {
+                            Behavior = AssociatedMenuBehavior.UseCollectionName,
+                            Group = AssociatedMenuGroup.Details,
+                            Label = new Label(Table.DisplayCollectionName.UserLocalizedLabel.Label, LanguageCode),
+                            Order = 10000
+                        },
+                        CascadeConfiguration = new CascadeConfiguration()
+                        {
+                            Assign = CascadeType.NoCascade,
+                            Delete = CascadeType.RemoveLink,
+                            Merge = CascadeType.NoCascade,
+                            Reparent = CascadeType.NoCascade,
+                            Share = CascadeType.NoCascade,
+                            Unshare = CascadeType.NoCascade
+                        },
+                        ReferencedEntity = Target.LogicalName,
+                        ReferencedAttribute = Target.PrimaryIdAttribute,
+                        ReferencingEntity = TableName,
+                        SchemaName = PublisherPrefix + RelationshipName
+                    },
+                    SolutionUniqueName = SolutionName
+                };
+
+                OrgService.Execute(CreateAttributeRequest);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
         }
         private void CreateCustomerAttribute(string SolutionName, string PublisherPrefix, string TableName, string FieldLabel, string FieldSchema, EntityMetadata Table, int Required)
         {
@@ -618,16 +768,6 @@ namespace MigrationAssistant
             {
                 throw new Exception(ex.Message);
             }
-        }
-        private Key CheckIfForeignKey(Table table, Field field)
-        {
-            Key key = table.KEYS.Find(x => x.COLUMN_NAME == field.COLUMN_NAME && x.KEY_TYPE == 2);
-
-            if (key != null)
-            {
-                if (!TableList.Exists(x => x.NAME.ToLower() == key.REFERENCED_TABLE.ToLower() && x.SCHEMA.ToLower() == key.REFERENCED_SCHEMA.ToLower())) key = null;
-            }
-            return key;
         }
     }
 }

@@ -246,7 +246,8 @@ namespace MigrationAssistant
                                     sourceField = field;
                                     sourceItemIdx = sourceTab.Items.IndexOf(sourceField.COLUMN_NAME + " (" + sourceField.DATA_TYPE + ")");
                                     destinationField = field.MAPPED_FIELD;
-                                    ExecuteMethod(MapColumn);
+
+                                    if (sourceItemIdx > -1) ExecuteMethod(MapColumn);
                                 }
                             }
                         }
@@ -268,7 +269,7 @@ namespace MigrationAssistant
         {
             if (sourceField != null && destinationField != null)
             {
-                if (mappings[destinationField.TABLE_NAME].Find(r => r.COLUMN_NAME == sourceField.COLUMN_NAME && r.TABLE_NAME == sourceField.TABLE_NAME) == null)
+                if (!mappings.Keys.Contains(destinationField.TABLE_NAME) || !mappings[destinationField.TABLE_NAME].Exists(r => r.COLUMN_NAME == sourceField.COLUMN_NAME && r.TABLE_NAME == sourceField.TABLE_NAME))
                 {
                     sourceItemIdx = sourceTab.SelectedIndex;                    
                 }
@@ -343,6 +344,7 @@ namespace MigrationAssistant
                     destinationItem = destinationFieldName + " (" + destinationFieldType + ")";
 
                     mappings[sourceField.MAPPED_FIELD.TABLE_NAME].Remove(mappings[sourceField.MAPPED_FIELD.TABLE_NAME].Find(r => r.COLUMN_NAME == sourceField.COLUMN_NAME && r.MAPPED_FIELD.COLUMN_NAME == destinationFieldName));
+                    sourceField.MAPPED_FIELD = null;
                     btn_Unmap.Enabled = false;
                 }
             }
@@ -983,9 +985,9 @@ namespace MigrationAssistant
                             Name = kv.Key,
                             Text = kv.Key,
                             BorderStyle = BorderStyle.None,
-                            Height = 434,
-                            Width = 9999,
-                            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
+                            Height = 282,
+                            Width = destinationTabControl.Width - 8
                         };
 
                         destinationTabControl.TabPages.Add(solutionTabPage);
@@ -994,9 +996,9 @@ namespace MigrationAssistant
                         {
                             Name = kv.Key,
                             Appearance = TabAppearance.FlatButtons,
-                            Height = 434,
-                            Width = 9999,
-                            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
+                            Height = 282,
+                            Width = destinationTabControl.Width - 8
                         };
 
                         tabControl.SelectedIndexChanged += new EventHandler(DestinationTab_Click);
@@ -1009,7 +1011,10 @@ namespace MigrationAssistant
                             {
                                 Name = entity.LogicalName,
                                 Text = entity.LogicalName,
-                                BorderStyle = BorderStyle.None
+                                BorderStyle = BorderStyle.None,
+                                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
+                                Height = 282,
+                                Width = destinationTabControl.Width - 8
                             };
 
                             tabControl.TabPages.Add(tableTabPage);
@@ -1018,9 +1023,9 @@ namespace MigrationAssistant
                             {
                                 Name = tableTabPage.Name,
                                 SelectionMode = SelectionMode.One,
-                                Height = 434,
-                                Width = 9999,
-                                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
+                                Height = 282,
+                                Width = destinationTabControl.Width - 8
                             };
 
                             box.SelectedIndexChanged += new EventHandler(DestinationField_Click);
@@ -1054,12 +1059,15 @@ namespace MigrationAssistant
         }
         private void MapColumn()
         {
-            EntityFactory.TableList.Find(t => t.NAME == sourceField.TABLE_NAME).MAPPED_ENTITY_NAME = destinationField.TABLE_NAME;
+            Table tableToMap = EntityFactory.TableList.Find(t => t.NAME == sourceField.TABLE_NAME);
+            if (tableToMap != null)
+            {
+                tableToMap.MAPPED_ENTITY_NAME = destinationField.TABLE_NAME;
 
-            string item = sourceField.COLUMN_NAME + " (" + sourceField.DATA_TYPE + ")";
-
-            sourceTab.Items.Remove(item);
-            sourceTab.Items.Insert(sourceItemIdx, item + " -> " + destinationField.TABLE_NAME + "." + destinationField.COLUMN_NAME + " (" + destinationField.DATA_TYPE + ")");
+                string item = sourceField.COLUMN_NAME + " (" + sourceField.DATA_TYPE + ")";
+                sourceTab.Items.Remove(item);
+                sourceTab.Items.Insert(sourceItemIdx, item + " -> " + destinationField.TABLE_NAME + "." + destinationField.COLUMN_NAME + " (" + destinationField.DATA_TYPE + ")");
+            }
         }
         private void MigrationAssistantControl_Load(object sender, EventArgs e)
         {

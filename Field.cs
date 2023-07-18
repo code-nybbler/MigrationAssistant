@@ -11,6 +11,7 @@
         public string TABLE_NAME;
 
         public Field MAPPED_FIELD;
+        public Key KEY;
 
         public int DISTINCT_VALUE_COUNT;
 
