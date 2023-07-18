@@ -28,7 +28,6 @@
         /// </summary>
         private void InitializeComponent()
         {
-            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(MigrationAssistantControl));
             this.toolStripMenu = new System.Windows.Forms.ToolStrip();
             this.btn_Close = new System.Windows.Forms.ToolStripButton();
             this.toolStripSeparator1 = new System.Windows.Forms.ToolStripSeparator();
@@ -255,7 +254,6 @@
             this.box_Server.Name = "box_Server";
             this.box_Server.Size = new System.Drawing.Size(286, 20);
             this.box_Server.TabIndex = 0;
-            this.box_Server.Text = resources.GetString("box_Server.Text");
             // 
             // label1
             // 
@@ -281,7 +279,6 @@
             this.box_TableSchema.Name = "box_TableSchema";
             this.box_TableSchema.Size = new System.Drawing.Size(166, 20);
             this.box_TableSchema.TabIndex = 4;
-            this.box_TableSchema.Text = "dbo";
             // 
             // box_IgnoreEmpty
             // 
@@ -322,7 +319,7 @@
             this.box_Mode.Name = "box_Mode";
             this.box_Mode.Size = new System.Drawing.Size(166, 21);
             this.box_Mode.TabIndex = 3;
-            this.box_Mode.Text = "Schema";
+            this.box_Mode.Text = "Database";
             // 
             // box_Database
             // 
@@ -330,7 +327,6 @@
             this.box_Database.Name = "box_Database";
             this.box_Database.Size = new System.Drawing.Size(286, 20);
             this.box_Database.TabIndex = 1;
-            this.box_Database.Text = "JusticeNexus_Maricopa";
             // 
             // btn_Connect
             // 
