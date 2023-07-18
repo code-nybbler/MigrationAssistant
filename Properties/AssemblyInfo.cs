@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
 [assembly: AssemblyTitle("MigrationAssistant")]
-[assembly: AssemblyDescription("Aids in the mapping process of migration")]
+[assembly: AssemblyDescription("Assists the user in the process of mapping legacy SQL database schemas to Microsoft Dataverse tables and columns, as well as exporting mapping documents and SQL queries to be used in migration scripts/packages.")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Luke Thomas")]
 [assembly: AssemblyProduct("Migration Assistant")]
